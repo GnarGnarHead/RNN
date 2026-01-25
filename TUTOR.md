@@ -82,8 +82,13 @@ If you teach both “copy” and “predict”, **don’t reuse the same prompt 
 Instead, tag the prompt so tasks are distinguishable:
 
 - **Copy**: `T:A S:A` (quiz: `T:A S:`)
-- **Next-letter**: `T:N:A S:B` (quiz: `T:N:A S:`)
-- **Two-letter next**: `T:N:AB S:C` (quiz: `T:N:AB S:`)
+- **Next-letter (contextual)**: `T:N:<alphabet>:A:n S:B` (quiz: `T:N:<alphabet>:A:n S:`)
+- **Two-letter next (contextual)**: `T:N:<alphabet>:AB:n S:C` (quiz: `T:N:<alphabet>:AB:n S:`)
+
+Why include `<alphabet>` in the prompt?
+
+- Because the “next letter” rule changes as the tutor expands the known alphabet (A–D vs A–E vs A–G).
+- Including it avoids contradictory supervision on the *same* prompt string.
 
 The stepper supports this directly via `--tasks`:
 
@@ -92,6 +97,31 @@ python3 scripts/tutor_stepper.py --text-path input.txt --targets ABCDE --tasks c
 ```
 
 As a “kind” dynamic rubric, the tutor gives partial credit for reasonable mistakes, e.g. copying `A` when the expected next letter was `B`.
+
+## Two-character patterns (digrams)
+
+To start building toward spelling, add a 2-character copy task:
+
+- **Digram copy**: `T:AB S:AB` (quiz: `T:AB S:` then generate 2 chars)
+
+The stepper supports this as `copy2`:
+
+```bash
+python3 scripts/tutor_stepper.py --text-path input.txt --targets ABCDEFG --tasks copy,copy2,next,next2 --task-order cycle
+```
+
+Tip: if you want to *see* (and reward) continuations like `F` vs `FG`, set quiz output length to 2:
+
+- CLI: `--quiz-len 2`
+- REPL: `gen 2`
+
+### “Discovering” new letters
+
+If the student predicts a canonical next letter that’s **not in the current targets** (e.g. you haven’t added `H` yet, but `FG` leads to `H`), that can be treated as a *good, prompt-bound guess*.
+
+The tutor can reward this as “ahead-of-curriculum” progress, and then you can decide whether to formally expand the targets:
+
+- `add H`
 
 ## Sentiment grading (kind but tightening)
 
@@ -129,6 +159,10 @@ Useful commands inside the REPL:
 - `detach on|off` (toggle detach during learn; default is off)
 - `order seq` (practice in alphabetical order)
 - `tasks copy,next` / `taskorder rand|cycle` (mix tasks slowly)
+- `focus EFG` (focus quizzes on a subset while rehearsal still covers all targets)
+- `rehearsal 3` (increase rehearsal weighting to reduce forgetting)
+- `copycont 0.4` / `nextcopy 0.4` (tighten/loosen partial credit for “reasonable mix-ups”)
+- `wcopy 3` / `wnext 2` (rehearse fundamentals more often while adding new tasks)
 - `drill 200` (run an interleaved practice block across all targets)
 - `save checkpoints/kinder.pt` / `load checkpoints/kinder.pt`
 
@@ -182,6 +216,14 @@ Each `{prompt}` is converted to `T:<prompt> S:<prompt>` (copy task).
 ```json
 {"cmd":"reset"}
 {"cmd":"ingest","text":"T:A S:"}
+{"cmd":"generate","max_new_tokens":1,"temperature":0.0}
+```
+
+Contextual next-letter quiz example (for `--targets ABCDE`):
+
+```json
+{"cmd":"reset"}
+{"cmd":"ingest","text":"T:N:ABCDE:A:n S:"}
 {"cmd":"generate","max_new_tokens":1,"temperature":0.0}
 ```
 

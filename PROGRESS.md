@@ -70,15 +70,19 @@ We mixed “copy” and “predict next” *slowly* without conflicting supervis
 Rule: **never** train both `T:A S:A` and `T:A S:B` (same prompt, different answer). Instead tag prediction prompts:
 
 - copy: `T:A S:A`
-- next: `T:N:A S:B`
-- next2: `T:N:AB S:C`
+- next (legacy): `T:N:A S:B`
+- next2 (legacy): `T:N:AB S:C`
+- next (current): `T:N:<alphabet>:A:n S:B`
+- next2 (current): `T:N:<alphabet>:AB:n S:C`
+
+Including `<alphabet>` in the prompt avoids contradictory supervision as the tutor expands the known set (A–D vs A–E vs A–G): the prompt string changes when the rule changes.
 
 Checkpoint (local): `checkpoints/kinder_ABCDE_copy_next_v2.pt`
 
 Verified retention (reset before each quiz):
 
 - copy: `A→A, B→B, C→C, D→D, E→E`
-- next: `N:A→B, N:B→C, N:C→D, N:D→E, N:E→A`
+- next (legacy prompts): `N:A→B, N:B→C, N:C→D, N:D→E, N:E→A`
 
 Verification command:
 
@@ -97,12 +101,32 @@ Then send (one per line):
 Notes:
 
 - `checkpoints/kinder_ABCDE_copy_next.pt` was an earlier mixed checkpoint where `B`-copy drifted to `C`; it’s kept only as a “what can break” artifact.
+- The stepper later switched prediction prompts to include `<alphabet>` (e.g. `T:N:ABCDE:A S:`) to avoid contradictory supervision as targets expand; `kinder_ABCDE_copy_next_v2.pt` predates that change.
 
 The stepper supports mixing via:
 
 ```bash
 python3 scripts/tutor_stepper.py --text-path input.txt --targets ABCDE --checkpoint checkpoints/kinder_ABCDE.pt --tasks copy,next --task-order cycle
 ```
+
+### A–G letters + digrams + prediction (current best)
+
+Checkpoint (local): `checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt`
+
+Demonstrated (retention, reset before each quiz):
+
+- copy: `A→A ... G→G`
+- digram copy (copy2): `AB→AB, BC→BC, ... GA→GA`
+- next (contextual + local marker): `N:ABCDEFG:A:n→B, ... N:ABCDEFG:G:n→A`
+- next2 (contextual + local marker): `N:ABCDEFG:AB:n→C, ... N:ABCDEFG:GA:n→B`
+
+Quick verify:
+
+```bash
+.venv/bin/python scripts/tutor_stepper.py --text-path input.txt --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt --targets ABCDEFG --tasks copy,copy2,next,next2
+```
+
+Then run `exam`.
 
 ## Next research step (proposed)
 
