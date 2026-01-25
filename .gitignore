@@ -17,12 +17,35 @@ venv/
 ENV/
 
 # Local data / outputs
-input.txt
-data/
-runs/
+/input.txt
+
+# Keep dirs available for docs, but ignore corpora / run artifacts
+/data/**
+!/data/.gitkeep
+!/data/README.md
+
+/runs/**
+!/runs/.gitkeep
+!/runs/README.md
+
+# Common ML artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.npz
+*.npy
+*.pkl
+
+# Experiment trackers
+wandb/
+tb/
+tensorboard/
 
 # Editors / OS
 .DS_Store
 .idea/
 .vscode/
-
+.env
+.env.*
