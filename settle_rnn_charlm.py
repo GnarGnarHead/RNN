@@ -30,6 +30,8 @@ class Cfg:
     dropout: float = 0.0
     use_state: bool = True
     state_alpha: float = 0.2
+    detach_state: bool = True   # stop-grad through time (BPTT off)
+    state_norm: bool = True     # RMSNorm(state) before injection
 
     # training
     steps: int = 8000
@@ -128,6 +130,7 @@ class SettleCharLM(nn.Module):
 
         # gated injection of previous-token state
         self.state_gate = nn.Linear(d, d)
+        self.state_norm = RMSNorm(d) if cfg.state_norm else None
         # damping inside settle loop (encourages contraction)
         self.settle_gate = nn.Linear(d, d)
 
@@ -149,8 +152,14 @@ class SettleCharLM(nn.Module):
             h0 = emb[:, t, :]  # (B, d)
 
             if self.cfg.use_state:
-                g = torch.sigmoid(self.state_gate(state))
-                h = h0 + g * state
+                if self.cfg.detach_state:
+                    state = state.detach()
+
+                state_in = state
+                if self.state_norm is not None:
+                    state_in = self.state_norm(state_in)
+                g = torch.sigmoid(self.state_gate(state_in))
+                h = h0 + g * state_in
             else:
                 h = h0
 
@@ -309,6 +318,18 @@ def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     p.add_argument("--state-alpha", type=float, default=Cfg.state_alpha)
 
     p.add_argument("--no-state", action="store_true", help="Disable recurrent state across tokens.")
+    p.add_argument(
+        "--detach-state",
+        action=argparse.BooleanOptionalAction,
+        default=Cfg.detach_state,
+        help="Detach recurrent state each timestep (disables BPTT through time).",
+    )
+    p.add_argument(
+        "--state-norm",
+        action=argparse.BooleanOptionalAction,
+        default=Cfg.state_norm,
+        help="RMSNorm the recurrent state before injecting it into the current token.",
+    )
 
     p.add_argument("--steps", type=int, default=Cfg.steps)
     p.add_argument("--lr", type=float, default=Cfg.lr)
@@ -354,6 +375,8 @@ def main() -> None:
         dropout=args.dropout,
         use_state=not args.no_state,
         state_alpha=args.state_alpha,
+        detach_state=args.detach_state,
+        state_norm=args.state_norm,
         steps=args.steps,
         lr=args.lr,
         weight_decay=args.weight_decay,

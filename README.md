@@ -29,6 +29,12 @@ python3 scripts/download_tiny_shakespeare.py --out input.txt
 python3 settle_rnn_charlm.py --k-settle 2
 ```
 
+By default the script detaches the recurrent state each timestep (no BPTT through time) and RMS-norms the state before injecting it. To enable full BPTT or disable normalization:
+
+```bash
+python3 settle_rnn_charlm.py --no-detach-state --no-state-norm
+```
+
 4. Sweep K:
 
 ```bash
