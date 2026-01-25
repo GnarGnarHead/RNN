@@ -1,0 +1,3 @@
+# Minimal runtime dependency for the CPU prototype.
+torch>=2.0
+
