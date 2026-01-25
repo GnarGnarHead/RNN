@@ -3,7 +3,7 @@ INPUT ?= input.txt
 STEPS ?= 8000
 K ?= 2
 
-.PHONY: download run sweep
+.PHONY: download run sweep tutor
 
 download:
 	$(PY) scripts/download_tiny_shakespeare.py --out $(INPUT)
@@ -13,3 +13,6 @@ run:
 
 sweep:
 	$(PY) settle_rnn_charlm.py --text-path $(INPUT) --steps $(STEPS) --sweep-k 1 2 4 8 --out-dir runs --run-name sweep
+
+tutor:
+	$(PY) scripts/brief_tutor_run.py --text-path $(INPUT)

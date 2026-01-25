@@ -53,6 +53,27 @@ python3 settle_rnn_charlm.py --steps 8000 --sweep-k 1 2 4 8 --out-dir runs --run
 - `delta[k]` decreasing with `k` (per-token settle convergence)
 - generation: less chaotic with larger K **without** repetition/mode collapse
 
+## Interactive session (JSONL)
+
+Run a long-lived process that keeps recurrent state across commands:
+
+```bash
+python3 session.py --text-path input.txt
+```
+
+Then send JSON lines on stdin (first command must be `reset`):
+
+```bash
+printf '%s\n' \
+  '{"cmd":"reset"}' \
+  '{"cmd":"ingest","text":"To be","k_settle":2}' \
+  '{"cmd":"generate","max_new_tokens":120,"temperature":0.9}' \
+  '{"cmd":"exit"}' \
+| python3 session.py --text-path input.txt
+```
+
+Supervised tutoring notes live in `TUTOR.md`.
+
 ## Notes
 
 - If `pip install -r requirements.txt` installs a GPU build of PyTorch on your machine, install the CPU wheels instead (see the official PyTorch install instructions for your platform).

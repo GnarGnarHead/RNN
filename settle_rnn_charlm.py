@@ -5,11 +5,14 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Iterable, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from rnn.model import ModelCfg, SettleCharLM
+from rnn.vocab import Vocab
 
 
 @dataclass
@@ -30,8 +33,8 @@ class Cfg:
     dropout: float = 0.0
     use_state: bool = True
     state_alpha: float = 0.2
-    detach_state: bool = True   # stop-grad through time (BPTT off)
-    state_norm: bool = True     # RMSNorm(state) before injection
+    detach_state: bool = True
+    state_norm: bool = True
 
     # training
     steps: int = 8000
@@ -56,18 +59,13 @@ def load_text(path: str) -> str:
         return f.read()
 
 
-def build_vocab(text: str) -> Tuple[Dict[str, int], Dict[int, str]]:
-    chars = sorted(set(text))
-    stoi = {ch: i for i, ch in enumerate(chars)}
-    itos = {i: ch for ch, i in stoi.items()}
-    return stoi, itos
+def encode(text: str, vocab: Vocab) -> torch.Tensor:
+    return torch.tensor(vocab.encode(text, strict=True), dtype=torch.long)
 
 
-def encode(text: str, stoi: Dict[str, int]) -> torch.Tensor:
-    return torch.tensor([stoi[c] for c in text], dtype=torch.long)
-
-
-def get_batch(data: torch.Tensor, cfg: Cfg, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+def get_batch(
+    data: torch.Tensor, cfg: Cfg, device: torch.device
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if data.numel() <= cfg.seq_len + 1:
         raise ValueError(
             f"Text is too short for seq_len={cfg.seq_len}. Need at least {cfg.seq_len + 2} characters."
@@ -78,149 +76,38 @@ def get_batch(data: torch.Tensor, cfg: Cfg, device: torch.device) -> Tuple[torch
     return x, y
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, d: int, eps: float = 1e-8):
-        super().__init__()
-        self.eps = eps
-        self.scale = nn.Parameter(torch.ones(d))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
-        return x * norm * self.scale
-
-
-class MLPBlock(nn.Module):
-    def __init__(self, d: int, dropout: float = 0.0):
-        super().__init__()
-        self.norm = RMSNorm(d)
-        self.fc1 = nn.Linear(d, 4 * d)
-        self.fc2 = nn.Linear(4 * d, d)
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.norm(x)
-        h = self.fc1(h)
-        h = F.gelu(h)
-        h = self.fc2(h)
-        h = self.drop(h)
-        return x + h
-
-
-class SettleCore(nn.Module):
-    def __init__(self, d: int, n_layers: int, dropout: float = 0.0):
-        super().__init__()
-        self.blocks = nn.ModuleList([MLPBlock(d, dropout) for _ in range(n_layers)])
-
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
-        for b in self.blocks:
-            h = b(h)
-        return h
-
-
-class SettleCharLM(nn.Module):
-    def __init__(self, vocab_size: int, cfg: Cfg):
-        super().__init__()
-        self.cfg = cfg
-        d = cfg.d_model
-
-        self.tok_emb = nn.Embedding(vocab_size, d)
-        self.core = SettleCore(d, cfg.n_layers, cfg.dropout)
-        self.out_norm = RMSNorm(d)
-        self.lm_head = nn.Linear(d, vocab_size, bias=False)
-
-        # gated injection of previous-token state
-        self.state_gate = nn.Linear(d, d)
-        self.state_norm = RMSNorm(d) if cfg.state_norm else None
-        # damping inside settle loop (encourages contraction)
-        self.settle_gate = nn.Linear(d, d)
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        x: (B, T) token ids
-        returns logits: (B, T, V)
-        """
-        bsz, seq = x.shape
-        d_model = self.cfg.d_model
-
-        emb = self.tok_emb(x)  # (B, T, d)
-        state = torch.zeros((bsz, d_model), device=emb.device, dtype=emb.dtype)
-
-        logits_out = []
-        deltas_accum = torch.zeros((self.cfg.k_settle,), device=emb.device, dtype=emb.dtype)
-
-        for t in range(seq):
-            h0 = emb[:, t, :]  # (B, d)
-
-            if self.cfg.use_state:
-                if self.cfg.detach_state:
-                    state = state.detach()
-
-                state_in = state
-                if self.state_norm is not None:
-                    state_in = self.state_norm(state_in)
-                g = torch.sigmoid(self.state_gate(state_in))
-                h = h0 + g * state_in
-            else:
-                h = h0
-
-            prev = h
-            for k in range(self.cfg.k_settle):
-                h_candidate = self.core(h)
-                dg = torch.sigmoid(self.settle_gate(h_candidate))
-                h = prev + dg * (h_candidate - prev)
-
-                with torch.no_grad():
-                    deltas_accum[k] += (h - prev).abs().mean()
-
-                prev = h
-
-            if self.cfg.use_state:
-                a = float(self.cfg.state_alpha)
-                state = (1.0 - a) * state + a * h
-
-            h_out = self.out_norm(h)
-            logits_out.append(self.lm_head(h_out).unsqueeze(1))
-
-        logits = torch.cat(logits_out, dim=1)
-        stats = {"delta_per_k": deltas_accum / seq}
-        return logits, stats
-
-
-def _sanitize_start_text(start: str, stoi: Dict[str, int]) -> str:
+def _sanitize_start_text(start: str, vocab: Vocab) -> str:
     if not start:
-        return next(iter(stoi.keys()))
-    ok = [c for c in start if c in stoi]
+        return next(iter(vocab.stoi.keys()))
+    ok = vocab.sanitize(start)
     if ok:
-        return "".join(ok)
-    return next(iter(stoi.keys()))
+        return ok
+    return next(iter(vocab.stoi.keys()))
 
 
 @torch.no_grad()
 def sample(
     model: SettleCharLM,
     start: str,
-    stoi: Dict[str, int],
-    itos: Dict[int, str],
+    vocab: Vocab,
     cfg: Cfg,
     length: int,
 ) -> str:
     model.eval()
     device = torch.device(cfg.device)
 
-    start = _sanitize_start_text(start, stoi)
-    ids = torch.tensor([[stoi[c] for c in start]], dtype=torch.long, device=device)
-    out = list(start)
+    start = _sanitize_start_text(start, vocab)
+    start_ids = vocab.encode(start, strict=False)
+    if not start_ids:
+        start_ids = [next(iter(vocab.stoi.values()))]
+        start = vocab.decode(start_ids)
 
-    for _ in range(length):
-        x = ids[:, -cfg.seq_len :]
-        logits, _ = model(x)
-        next_logits = logits[:, -1, :] / max(cfg.temperature, 1e-6)
-        probs = F.softmax(next_logits, dim=-1)
-        nxt = torch.multinomial(probs, num_samples=1)
-        ids = torch.cat([ids, nxt], dim=1)
-        out.append(itos[int(nxt.item())])
+    model.reset_state(batch_size=1)
+    for tid in start_ids:
+        model.step(torch.tensor([tid], device=device), k_settle=cfg.k_settle)
 
-    return "".join(out)
+    gen_ids, _ = model.generate(length, temperature=cfg.temperature, k_settle=cfg.k_settle)
+    return start + vocab.decode(gen_ids[0].tolist())
 
 
 def _ensure_out_dir(out_dir: Path, run_name: str) -> Path:
@@ -238,13 +125,22 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
     set_seed(cfg.seed)
 
     text = load_text(cfg.text_path)
-    stoi, itos = build_vocab(text)
-    data = encode(text, stoi)
+    vocab = Vocab.from_text(text)
+    data = encode(text, vocab)
 
     device = torch.device(cfg.device)
-    vocab_size = len(stoi)
+    model_cfg = ModelCfg(
+        d_model=cfg.d_model,
+        n_layers=cfg.n_layers,
+        k_settle=cfg.k_settle,
+        dropout=cfg.dropout,
+        use_state=cfg.use_state,
+        state_alpha=cfg.state_alpha,
+        detach_state=cfg.detach_state,
+        state_norm=cfg.state_norm,
+    )
 
-    model = SettleCharLM(vocab_size, cfg).to(device)
+    model = SettleCharLM(vocab.size, model_cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
     run_dir: Path | None = None
@@ -259,8 +155,9 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
         model.train()
         xb, yb = get_batch(data, cfg, device)
 
-        logits, stats = model(xb)
-        loss = F.cross_entropy(logits.reshape(-1, vocab_size), yb.reshape(-1))
+        model.reset_state(batch_size=xb.shape[0])
+        logits, stats = model.forward_sequence(xb, k_settle=cfg.k_settle)
+        loss = F.cross_entropy(logits.reshape(-1, vocab.size), yb.reshape(-1))
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -282,6 +179,8 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
                             "loss": float(loss.item()),
                             "dt_s": float(dt),
                             "delta_per_k": [float(v) for v in delta],
+                            "state_norm": float(stats["state_norm"].detach().cpu().item()),
+                            "logits_entropy": float(stats["logits_entropy"].detach().cpu().item()),
                         }
                     )
                     + "\n"
@@ -290,7 +189,7 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
             t0 = time.time()
 
         if cfg.sample_every > 0 and step % cfg.sample_every == 0:
-            s = sample(model, start=cfg.start_text, stoi=stoi, itos=itos, cfg=cfg, length=cfg.sample_len)
+            s = sample(model, start=cfg.start_text, vocab=vocab, cfg=cfg, length=cfg.sample_len)
             print("\n--- SAMPLE ---")
             print(s)
             print("--------------\n")
