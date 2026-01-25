@@ -174,8 +174,9 @@ def main() -> None:
                 lr = float(msg.get("lr", 3e-4))
                 weight_decay = float(msg.get("weight_decay", 0.1))
                 grad_clip = float(msg.get("grad_clip", 1.0))
-                detach_state = bool(msg.get("detach_state", False))
+                detach_state = bool(msg.get("detach_state", args.detach_state))
                 reset_state_each_example = bool(msg.get("reset_state_each_example", True))
+                loss_mode = str(msg.get("loss_mode", "full"))
                 seed = msg.get("seed", None)
                 seed_i = int(seed) if seed is not None else None
 
@@ -189,6 +190,7 @@ def main() -> None:
                     detach_state=detach_state,
                     reset_state_each_example=reset_state_each_example,
                     seed=seed_i,
+                    loss_mode=loss_mode,
                 )
                 stats = sess.stats()
                 stats["train"] = train_stats

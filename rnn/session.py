@@ -146,6 +146,7 @@ class SettleSession:
         detach_state: bool = False,
         reset_state_each_example: bool = True,
         seed: int | None = None,
+        loss_mode: str = "full",
     ) -> Dict[str, Any]:
         """
         Supervised next-token learning on short text examples.
@@ -157,6 +158,8 @@ class SettleSession:
             raise ValueError("learn() requires at least 1 example")
         if steps <= 0:
             raise ValueError(f"steps must be >= 1, got {steps}")
+        if loss_mode not in {"full", "answer_only"}:
+            raise ValueError(f"loss_mode must be 'full' or 'answer_only', got {loss_mode!r}")
 
         opt = self._ensure_optimizer(lr=lr, weight_decay=weight_decay)
         rng = random.Random(seed)
@@ -186,7 +189,28 @@ class SettleSession:
                     self.model.reset_state(batch_size=1)
 
                 logits, _ = self.model.forward_sequence(x, k_settle=k_settle, detach_state=detach_state)
-                loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
+
+                if loss_mode == "answer_only":
+                    marker = " S:"
+                    m = text.rfind(marker)
+                    if m == -1:
+                        raise ValueError("answer_only loss_mode requires examples containing ' S:'.")
+                    ans_start = m + len(marker)
+                    # y positions correspond to original indices 1..len(text)-1.
+                    # Keep loss only for tokens at original indices >= ans_start.
+                    cut = max(int(ans_start) - 1, 0)
+                    y_masked = y.clone()
+                    if cut > 0:
+                        y_masked[:, :cut] = -100
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, vocab_size),
+                        y_masked.reshape(-1),
+                        ignore_index=-100,
+                    )
+                    total_tokens += int((y_masked != -100).sum().detach().cpu().item())
+                else:
+                    loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
+                    total_tokens += len(y_ids)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
@@ -194,7 +218,6 @@ class SettleSession:
                 opt.step()
 
                 total_loss += float(loss.detach().cpu().item())
-                total_tokens += len(y_ids)
         finally:
             # Restore interactive state.
             self.model.state = saved_state

@@ -1,5 +1,28 @@
 # Tutor notes (kindergarten → words → sentences)
 
+## What this is
+
+We’re testing a simple hypothesis:
+
+> Highly structured lessons + feedback + a persistent recurrent state can build capability without attention.
+
+This is intentionally a **research loop**, not a “train once and declare victory” pipeline.
+
+## Roles (researchers, different hats)
+
+- **Codex CLI assistant (tutor/controller)**:
+  - directly interacts with the model (quizzes, grades, picks a small correction)
+  - runs the actual `learn` step(s) and reports what happened
+  - stays conservative: small updates, frequent retention checks, checkpoint milestones
+- **You (human, guiding researcher)**:
+  - sets goals, constraints, and what counts as “good enough”
+  - approves or rejects training steps (or asks for smaller/bigger steps)
+  - decides when to broaden scope (A→E → digrams → words) or backtrack when the model forgets
+
+The point is to learn about the model learning. Healthy paranoia is fine: ask “what exactly did you run?” and demand reproducible commands.
+
+## Architecture boundary
+
 This project separates responsibilities:
 
 - The **model** (`rnn/model.py`) only settles + predicts next characters.
@@ -52,6 +75,24 @@ When quizzing, you omit the answer and ask the model to generate it:
 T:A S:
 ```
 
+## Mixing mimicry + prediction (recommended)
+
+If you teach both “copy” and “predict”, **don’t reuse the same prompt with different answers** (e.g. don’t do `T:A S:A` and `T:A S:B`). That is contradictory supervision and will usually collapse.
+
+Instead, tag the prompt so tasks are distinguishable:
+
+- **Copy**: `T:A S:A` (quiz: `T:A S:`)
+- **Next-letter**: `T:N:A S:B` (quiz: `T:N:A S:`)
+- **Two-letter next**: `T:N:AB S:C` (quiz: `T:N:AB S:`)
+
+The stepper supports this directly via `--tasks`:
+
+```bash
+python3 scripts/tutor_stepper.py --text-path input.txt --targets ABCDE --tasks copy,next --task-order cycle
+```
+
+As a “kind” dynamic rubric, the tutor gives partial credit for reasonable mistakes, e.g. copying `A` when the expected next letter was `B`.
+
 ## Sentiment grading (kind but tightening)
 
 Early on, grade like a child:
@@ -85,7 +126,30 @@ Useful commands inside the REPL:
 - `targets AB` (change practice set)
 - `add C` (add letters)
 - `k 4` / `kl 4` (change settle steps for quiz / learn)
+- `detach on|off` (toggle detach during learn; default is off)
+- `order seq` (practice in alphabetical order)
+- `tasks copy,next` / `taskorder rand|cycle` (mix tasks slowly)
+- `drill 200` (run an interleaved practice block across all targets)
 - `save checkpoints/kinder.pt` / `load checkpoints/kinder.pt`
+
+Note: the stepper trains with **answer-only loss masking** (it only backprops on the part after `S:`). This avoids an impossible objective (predicting the prompt content) when you practice multiple different prompts.
+
+Also: for letter-copy / prompt-conditioned tasks, you usually want **BPTT through the example**, so the stepper defaults to `--no-detach-state` during learning. If you want faster but “shallow” learning that doesn’t propagate credit assignment through time, restart with `--detach-state`.
+
+## How to run the kindergarten loop (recommended)
+
+For each new concept (letters first):
+
+1. **Retention quiz** (state reset each time): check old targets still work.
+2. **Teach in small bursts**: one `learn` call, 25–150 steps.
+3. **Re-quiz retention** immediately. If anything regresses, reduce `lr` and increase rehearsal weight.
+4. **Checkpoint** after each milestone (e.g. `checkpoints/kinder_ABCDE.pt`).
+
+Key tricks that prevent collapse/forgetting:
+
+- **Interleave rehearsal**: when adding `D`, train on `A,B,C,D` (not just `D`).
+- **Weight rehearsal**: duplicates in the `examples` list act like a simple sampler weight.
+- **Lower `lr` as the set grows**: early letters tolerated `3e-3`; adding new letters often works better at `1e-3` with more steps.
 
 ## Underlying JSONL session (advanced)
 

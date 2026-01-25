@@ -63,6 +63,24 @@ python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 
 Tutoring notes (including the underlying JSONL session protocol used by the stepper) live in `TUTOR.md`.
 
+## Research workflow (what we’re actually doing)
+
+This repo is intentionally “lab notebook style”: small, inspectable experiments around **feedback + structured lessons** as an alternative to attention.
+
+Roles:
+
+- **Codex CLI assistant**: the *tutor/controller* that interacts with the model (quizzes, grades, applies tiny supervised updates).
+- **You (human)**: the *guiding researcher* who sets goals, approves training, and decides when to broaden scope or backtrack.
+
+Practical approach:
+
+- Start from **random weights** and teach **mimicry** (A→A, B→B, …) with explicit retention checks (reset state, re-quiz).
+- When adding new targets, always **interleave rehearsal** of old targets (otherwise catastrophic forgetting is common).
+- As the target set grows, prefer **lower `lr` + more steps** over high `lr` (safer, less overwriting).
+- Save **checkpoints** under `checkpoints/` (ignored by git) whenever you hit a milestone (e.g. A–E).
+
+Current status and what has been demonstrated so far lives in `PROGRESS.md`.
+
 ## Notes
 
 - If `pip install -r requirements.txt` installs a GPU build of PyTorch on your machine, install the CPU wheels instead (see the official PyTorch install instructions for your platform).
