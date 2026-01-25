@@ -53,26 +53,15 @@ python3 settle_rnn_charlm.py --steps 8000 --sweep-k 1 2 4 8 --out-dir runs --run
 - `delta[k]` decreasing with `k` (per-token settle convergence)
 - generation: less chaotic with larger K **without** repetition/mode collapse
 
-## Interactive session (JSONL)
+## Tutor stepper (human in the loop)
 
-Run a long-lived process that keeps recurrent state across commands:
-
-```bash
-python3 session.py --text-path input.txt
-```
-
-Then send JSON lines on stdin (first command must be `reset`):
+Interactive REPL that quizzes → grades → suggests a correction, then waits for approval before applying any training steps:
 
 ```bash
-printf '%s\n' \
-  '{"cmd":"reset"}' \
-  '{"cmd":"ingest","text":"To be","k_settle":2}' \
-  '{"cmd":"generate","max_new_tokens":120,"temperature":0.9}' \
-  '{"cmd":"exit"}' \
-| python3 session.py --text-path input.txt
+python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 ```
 
-Supervised tutoring notes live in `TUTOR.md`.
+Tutoring notes (including the underlying JSONL session protocol used by the stepper) live in `TUTOR.md`.
 
 ## Notes
 

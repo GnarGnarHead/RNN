@@ -15,4 +15,4 @@ sweep:
 	$(PY) settle_rnn_charlm.py --text-path $(INPUT) --steps $(STEPS) --sweep-k 1 2 4 8 --out-dir runs --run-name sweep
 
 tutor:
-	$(PY) scripts/brief_tutor_run.py --text-path $(INPUT)
+	$(PY) scripts/tutor_stepper.py --text-path $(INPUT)

@@ -252,9 +252,13 @@ class SettleCharLM(nn.Module):
                 logits, last_stats = self.step(token, k_settle=k)
                 delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
                 entropy_accum += last_stats["logits_entropy"].to(entropy_accum.dtype)
-                next_logits = logits / max(float(temperature), 1e-6)
-                probs = F.softmax(next_logits, dim=-1)
-                token = torch.multinomial(probs, num_samples=1).squeeze(1)
+                temp = float(temperature)
+                if temp <= 0.0:
+                    token = torch.argmax(logits, dim=-1)
+                else:
+                    next_logits = logits / temp
+                    probs = F.softmax(next_logits, dim=-1)
+                    token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 out.append(token)
 
             self.last_token_id = token

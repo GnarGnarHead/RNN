@@ -161,35 +161,44 @@ class SettleSession:
         opt = self._ensure_optimizer(lr=lr, weight_decay=weight_decay)
         rng = random.Random(seed)
 
+        # Preserve interactive session state. Training will reset/unroll state internally.
+        saved_state = self.model.state.detach().clone()
+        saved_last_token_id = None if self.model.last_token_id is None else self.model.last_token_id.detach().clone()
+
         total_loss = 0.0
         total_tokens = 0
         vocab_size = self.vocab.size
 
         self.model.train()
-        for _ in range(int(steps)):
-            text = rng.choice(examples)
-            ids = self.vocab.encode(text, strict=True)
-            if len(ids) < 2:
-                continue
+        try:
+            for _ in range(int(steps)):
+                text = rng.choice(examples)
+                ids = self.vocab.encode(text, strict=True)
+                if len(ids) < 2:
+                    continue
 
-            x_ids = ids[:-1]
-            y_ids = ids[1:]
-            x = torch.tensor([x_ids], device=self.device, dtype=torch.long)
-            y = torch.tensor([y_ids], device=self.device, dtype=torch.long)
+                x_ids = ids[:-1]
+                y_ids = ids[1:]
+                x = torch.tensor([x_ids], device=self.device, dtype=torch.long)
+                y = torch.tensor([y_ids], device=self.device, dtype=torch.long)
 
-            if reset_state_each_example:
-                self.model.reset_state(batch_size=1)
+                if reset_state_each_example:
+                    self.model.reset_state(batch_size=1)
 
-            logits, _ = self.model.forward_sequence(x, k_settle=k_settle, detach_state=detach_state)
-            loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
+                logits, _ = self.model.forward_sequence(x, k_settle=k_settle, detach_state=detach_state)
+                loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
 
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
-            opt.step()
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
+                opt.step()
 
-            total_loss += float(loss.detach().cpu().item())
-            total_tokens += len(y_ids)
+                total_loss += float(loss.detach().cpu().item())
+                total_tokens += len(y_ids)
+        finally:
+            # Restore interactive state.
+            self.model.state = saved_state
+            self.model.last_token_id = saved_last_token_id
 
         if total_tokens == 0:
             raise RuntimeError("No trainable tokens produced (are examples too short?)")

@@ -119,7 +119,14 @@ def main() -> None:
                 prompt = str(obj.get("prompt", ""))
                 answer = str(obj.get("answer", prompt))
                 # Call/response format tuned for next-token LM.
-                return f"T:{prompt}\nS:{answer}\n"
+                #
+                # Important: keep the "answer" as the final token (no trailing newline),
+                # so early kindergarten-style "echo" tasks don't accidentally teach '\n'
+                # as part of the response.
+                #
+                # Also: use a space separator instead of '\n' to keep the alphabet lesson
+                # as minimal as possible.
+                return f"T:{prompt} S:{answer}"
         raise ValueError("Example must be a string or an object with {text} or {prompt[,answer]}.")
 
     for raw in sys.stdin:
