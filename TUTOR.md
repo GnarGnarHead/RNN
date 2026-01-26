@@ -151,6 +151,17 @@ For research-style tutoring, use the stepper REPL. It quizzes → grades → sug
 python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 ```
 
+### Important: avoid “starving” target/task combinations
+
+If you use both:
+
+- `order seq` (sequential target selection), and
+- `taskorder cycle` (cyclic task selection)
+
+…the REPL advances both indices together and only visits **some** `(target, task)` pairs. When the number of selected targets and tasks share a factor (e.g. 2 targets + 2 tasks), you can accidentally *never* practice critical pairs (like `copy:H` or `copy2:GH`).
+
+Fix: switch either dimension to random (`taskorder rand` is usually enough), or teach in short phases (e.g. `focus H` with `tasks copy` first, then add `copy2/next`).
+
 Useful commands inside the REPL:
 
 - `targets AB` (change practice set)

@@ -128,6 +128,35 @@ Quick verify:
 
 Then run `exam`.
 
+### ABCDEFGH trial attempt (note: did not teach `H` yet)
+
+Checkpoint artifact (local): `checkpoints/kinder_ABCDEFGH_alltasks_ctxn_trial.pt`
+
+What happened:
+
+- A–G retention stayed perfect.
+- `H` *did not* bind correctly:
+  - `copy:'H'` answered `'F'`
+  - `copy2:'GH'` answered `'GD'`
+  - `next:'...:F:n'` answered `'A'` (expected `'G'`)
+  - `next2:'...:FG:n'` answered `'A'` (expected `'H'`)
+
+Root cause (process bug, not necessarily a model limitation):
+
+- The run used `--order sequential` + `--task-order cycle` with `focus GH`.
+- With 2 focused targets and 2 tasks (`copy,copy2`), the REPL repeatedly paired them as:
+  - `G` always got `copy`
+  - `H` always got `copy2`
+- That meant the operator never actually practiced the failing pairs (`copy:H`, `copy2:GH`), so the “30 rounds” didn’t apply meaningful updates for those prompts (baseline exam == post-round exam for the failing items).
+
+Fix for next attempt:
+
+- Use `taskorder rand` (recommended) or `order rand` to cover the cross-product of targets × tasks, **especially** when using `focus`.
+- Or teach in short phases:
+  1) `focus H` + `tasks copy` until `H→H`
+  2) `focus G` + `tasks copy2,next` until `GH→GH` and `N:...:G:n→H`
+  3) Re-enable full tasks and `exam`
+
 ## Next research step (proposed)
 
 Move from single letters to **digrams** while keeping retention:
