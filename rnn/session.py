@@ -61,7 +61,9 @@ class SettleSession:
 
     def _require_ready(self) -> None:
         if self.model.state is None:
-            raise RuntimeError("Session state is not initialized. Send {\"cmd\":\"reset\"} first.")
+            raise RuntimeError(
+                'Session state is not initialized. Send {"cmd":"reset"} first.'
+            )
 
     def reset(self) -> None:
         self.model.reset_state(batch_size=1)
@@ -88,7 +90,9 @@ class SettleSession:
             token = torch.tensor([tid], device=self.device, dtype=torch.long)
             _, stats = self.model.step(token, k_settle=k_settle)
             if delta_accum is None:
-                delta_accum = torch.zeros_like(stats["delta_per_k"], dtype=torch.float32)
+                delta_accum = torch.zeros_like(
+                    stats["delta_per_k"], dtype=torch.float32
+                )
                 k = int(stats["k_settle"].detach().cpu().item())
             delta_accum += stats["delta_per_k"].to(delta_accum.dtype)
             entropy_accum += stats["logits_entropy"].to(entropy_accum.dtype)
@@ -99,19 +103,33 @@ class SettleSession:
 
         self._stats.k_settle = k
         self._stats.delta_per_k = (delta_accum / len(ids)).detach().cpu().tolist()
-        self._stats.logits_entropy = float((entropy_accum / len(ids)).detach().cpu().item())
+        self._stats.logits_entropy = float(
+            (entropy_accum / len(ids)).detach().cpu().item()
+        )
         if last_state_norm is not None:
             self._stats.state_norm = float(last_state_norm.detach().cpu().item())
         self._stats.total_ingested += len(ids)
 
     def generate(
-        self, max_new_tokens: int, *, temperature: float = 1.0, k_settle: int | None = None
+        self,
+        max_new_tokens: int,
+        *,
+        temperature: float = 1.0,
+        k_settle: int | None = None,
+        restep_last_token: bool = True,
     ) -> str:
         self._require_ready()
-        ids, stats = self.model.generate(max_new_tokens, temperature=temperature, k_settle=k_settle)
+        ids, stats = self.model.generate(
+            max_new_tokens,
+            temperature=temperature,
+            k_settle=k_settle,
+            restep_last_token=restep_last_token,
+        )
         self._stats.k_settle = int(stats["k_settle"].detach().cpu().item())
         self._stats.delta_per_k = stats["delta_per_k"].detach().cpu().tolist()
-        self._stats.logits_entropy = float(stats["logits_entropy"].detach().cpu().item())
+        self._stats.logits_entropy = float(
+            stats["logits_entropy"].detach().cpu().item()
+        )
         self._stats.state_norm = float(stats["state_norm"].detach().cpu().item())
         self._stats.total_generated += int(max_new_tokens)
         return self.vocab.decode(ids[0].tolist())
@@ -121,9 +139,13 @@ class SettleSession:
         out["ready"] = self.model.state is not None
         return out
 
-    def _ensure_optimizer(self, *, lr: float, weight_decay: float) -> torch.optim.Optimizer:
+    def _ensure_optimizer(
+        self, *, lr: float, weight_decay: float
+    ) -> torch.optim.Optimizer:
         if self._opt is None:
-            self._opt = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            self._opt = torch.optim.AdamW(
+                self.model.parameters(), lr=lr, weight_decay=weight_decay
+            )
             self._opt_cfg = {"lr": float(lr), "weight_decay": float(weight_decay)}
             return self._opt
 
@@ -159,14 +181,26 @@ class SettleSession:
         if steps <= 0:
             raise ValueError(f"steps must be >= 1, got {steps}")
         if loss_mode not in {"full", "answer_only"}:
-            raise ValueError(f"loss_mode must be 'full' or 'answer_only', got {loss_mode!r}")
+            raise ValueError(
+                f"loss_mode must be 'full' or 'answer_only', got {loss_mode!r}"
+            )
 
         opt = self._ensure_optimizer(lr=lr, weight_decay=weight_decay)
         rng = random.Random(seed)
 
         # Preserve interactive session state. Training will reset/unroll state internally.
         saved_state = self.model.state.detach().clone()
-        saved_last_token_id = None if self.model.last_token_id is None else self.model.last_token_id.detach().clone()
+        saved_last_token_id = (
+            None
+            if self.model.last_token_id is None
+            else self.model.last_token_id.detach().clone()
+        )
+        saved_last_logits = (
+            None
+            if self.model.last_logits is None
+            else self.model.last_logits.detach().clone()
+        )
+        saved_last_step_stats = self.model.last_step_stats
 
         total_loss = 0.0
         total_tokens = 0
@@ -188,13 +222,17 @@ class SettleSession:
                 if reset_state_each_example:
                     self.model.reset_state(batch_size=1)
 
-                logits, _ = self.model.forward_sequence(x, k_settle=k_settle, detach_state=detach_state)
+                logits, _ = self.model.forward_sequence(
+                    x, k_settle=k_settle, detach_state=detach_state
+                )
 
                 if loss_mode == "answer_only":
                     marker = " S:"
                     m = text.rfind(marker)
                     if m == -1:
-                        raise ValueError("answer_only loss_mode requires examples containing ' S:'.")
+                        raise ValueError(
+                            "answer_only loss_mode requires examples containing ' S:'."
+                        )
                     ans_start = m + len(marker)
                     # y positions correspond to original indices 1..len(text)-1.
                     # Keep loss only for tokens at original indices >= ans_start.
@@ -209,12 +247,16 @@ class SettleSession:
                     )
                     total_tokens += int((y_masked != -100).sum().detach().cpu().item())
                 else:
-                    loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, vocab_size), y.reshape(-1)
+                    )
                     total_tokens += len(y_ids)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(grad_clip))
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), float(grad_clip)
+                )
                 opt.step()
 
                 total_loss += float(loss.detach().cpu().item())
@@ -222,6 +264,8 @@ class SettleSession:
             # Restore interactive state.
             self.model.state = saved_state
             self.model.last_token_id = saved_last_token_id
+            self.model.last_logits = saved_last_logits
+            self.model.last_step_stats = saved_last_step_stats
 
         if total_tokens == 0:
             raise RuntimeError("No trainable tokens produced (are examples too short?)")
@@ -241,7 +285,9 @@ class SettleSession:
         chars = [self.vocab.itos[i] for i in range(self.vocab.size)]
         ckpt: Dict[str, Any] = {
             "format": "rnn-session-v1",
-            "model_cfg": asdict(self.model.cfg) if isinstance(self.model.cfg, ModelCfg) else {},
+            "model_cfg": asdict(self.model.cfg)
+            if isinstance(self.model.cfg, ModelCfg)
+            else {},
             "vocab_chars": chars,
             "model": self.model.state_dict(),
             "stats": self._stats.to_dict(),
@@ -251,7 +297,9 @@ class SettleSession:
             ckpt["optimizer_cfg"] = self._opt_cfg or {}
         return ckpt
 
-    def load_checkpoint_dict(self, ckpt: Dict[str, Any], *, load_optimizer: bool = True) -> None:
+    def load_checkpoint_dict(
+        self, ckpt: Dict[str, Any], *, load_optimizer: bool = True
+    ) -> None:
         vocab_chars = ckpt.get("vocab_chars")
         if vocab_chars is not None:
             expected = [self.vocab.itos[i] for i in range(self.vocab.size)]
@@ -264,6 +312,8 @@ class SettleSession:
         if not isinstance(model_state, dict):
             raise ValueError("Checkpoint missing 'model' state_dict.")
         self.model.load_state_dict(model_state)
+        self.model.last_logits = None
+        self.model.last_step_stats = None
 
         if load_optimizer and "optimizer" in ckpt:
             opt_cfg = ckpt.get("optimizer_cfg") or {}
@@ -275,7 +325,9 @@ class SettleSession:
         stats = ckpt.get("stats")
         if isinstance(stats, dict):
             # Restore training counters only; transient stats reset is explicit via reset().
-            self._stats.total_train_steps = int(stats.get("total_train_steps", self._stats.total_train_steps))
+            self._stats.total_train_steps = int(
+                stats.get("total_train_steps", self._stats.total_train_steps)
+            )
             self._stats.total_train_tokens = int(
                 stats.get("total_train_tokens", self._stats.total_train_tokens)
             )

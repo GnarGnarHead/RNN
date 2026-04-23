@@ -18,6 +18,7 @@ ENV/
 
 # Local data / outputs
 /input.txt
+/.codex
 
 # Keep dirs available for docs, but ignore corpora / run artifacts
 /data/**

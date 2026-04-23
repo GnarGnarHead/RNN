@@ -28,9 +28,10 @@ class Vocab:
             missing = sorted({c for c in text if c not in self.stoi})
             if missing:
                 preview = "".join(missing[:20])
-                raise ValueError(f"Text contains OOV characters (showing up to 20): {preview!r}")
+                raise ValueError(
+                    f"Text contains OOV characters (showing up to 20): {preview!r}"
+                )
         return [self.stoi[c] for c in text if c in self.stoi]
 
     def decode(self, ids: Iterable[int]) -> str:
         return "".join(self.itos[int(i)] for i in ids)
-

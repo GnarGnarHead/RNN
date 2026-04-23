@@ -20,4 +20,5 @@ jobs:
         run: ruff check .
       - name: Syntax check
         run: python -m compileall .
-
+      - name: Unit tests
+        run: python -m unittest discover -s tests

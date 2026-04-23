@@ -37,9 +37,15 @@ def _emit(
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Long-running JSONL session for the settle-loop char LM.")
+    p = argparse.ArgumentParser(
+        description="Long-running JSONL session for the settle-loop char LM."
+    )
 
-    p.add_argument("--text-path", default="input.txt", help="Text file used to build the character vocab.")
+    p.add_argument(
+        "--text-path",
+        default="input.txt",
+        help="Text file used to build the character vocab.",
+    )
     p.add_argument("--device", default="cpu")
     p.add_argument("--seed", type=int, default=1337)
 
@@ -48,7 +54,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--k-settle", type=int, default=ModelCfg.k_settle)
     p.add_argument("--dropout", type=float, default=ModelCfg.dropout)
 
-    p.add_argument("--no-state", action="store_true", help="Disable recurrent state across tokens.")
+    p.add_argument(
+        "--no-state", action="store_true", help="Disable recurrent state across tokens."
+    )
     p.add_argument("--state-alpha", type=float, default=ModelCfg.state_alpha)
     p.add_argument(
         "--detach-state",
@@ -63,7 +71,15 @@ def _parse_args() -> argparse.Namespace:
         help="RMSNorm the recurrent state before injecting it into the current token.",
     )
 
-    p.add_argument("--checkpoint", default="", help="Optional path to a torch state_dict to load.")
+    p.add_argument(
+        "--checkpoint", default="", help="Optional path to a torch state_dict to load."
+    )
+    p.add_argument(
+        "--restep-generate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Re-step the last ingested token before sampling during generate() (legacy-compatible).",
+    )
 
     return p.parse_args()
 
@@ -78,7 +94,9 @@ def _repeat_frac(text: str) -> float:
 def main() -> None:
     args = _parse_args()
     if not Path(args.text_path).exists():
-        raise SystemExit(f"Missing '{args.text_path}'. Provide a text file to build the vocab.")
+        raise SystemExit(
+            f"Missing '{args.text_path}'. Provide a text file to build the vocab."
+        )
 
     torch.manual_seed(int(args.seed))
     text = load_text(args.text_path)
@@ -106,6 +124,8 @@ def main() -> None:
             sess.load_checkpoint_dict(loaded, load_optimizer=True)
         elif isinstance(loaded, dict):
             model.load_state_dict(loaded)
+            model.last_logits = None
+            model.last_step_stats = None
         else:
             raise ValueError("Unsupported checkpoint format.")
 
@@ -127,7 +147,9 @@ def main() -> None:
                 # Also: use a space separator instead of '\n' to keep the alphabet lesson
                 # as minimal as possible.
                 return f"T:{prompt} S:{answer}"
-        raise ValueError("Example must be a string or an object with {text} or {prompt[,answer]}.")
+        raise ValueError(
+            "Example must be a string or an object with {text} or {prompt[,answer]}."
+        )
 
     for raw in sys.stdin:
         line = raw.strip()
@@ -155,7 +177,15 @@ def main() -> None:
                 max_new = int(msg.get("max_new_tokens", 50))
                 temperature = float(msg.get("temperature", 1.0))
                 k_settle = msg.get("k_settle", None)
-                out = sess.generate(max_new, temperature=temperature, k_settle=k_settle)
+                restep_last_token = bool(
+                    msg.get("restep_last_token", args.restep_generate)
+                )
+                out = sess.generate(
+                    max_new,
+                    temperature=temperature,
+                    k_settle=k_settle,
+                    restep_last_token=restep_last_token,
+                )
                 stats = sess.stats()
                 stats["repeat_frac"] = _repeat_frac(out)
                 _emit(True, text=out, stats=stats)
@@ -175,7 +205,9 @@ def main() -> None:
                 weight_decay = float(msg.get("weight_decay", 0.1))
                 grad_clip = float(msg.get("grad_clip", 1.0))
                 detach_state = bool(msg.get("detach_state", args.detach_state))
-                reset_state_each_example = bool(msg.get("reset_state_each_example", True))
+                reset_state_each_example = bool(
+                    msg.get("reset_state_each_example", True)
+                )
                 loss_mode = str(msg.get("loss_mode", "full"))
                 seed = msg.get("seed", None)
                 seed_i = int(seed) if seed is not None else None
@@ -215,6 +247,8 @@ def main() -> None:
                     sess.load_checkpoint_dict(ckpt, load_optimizer=True)
                 elif isinstance(ckpt, dict):
                     model.load_state_dict(ckpt)
+                    model.last_logits = None
+                    model.last_step_stats = None
                 else:
                     raise ValueError("Unsupported checkpoint format.")
                 _emit(True, stats=sess.stats())

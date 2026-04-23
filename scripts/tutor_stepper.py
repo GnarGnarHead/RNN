@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from rnn.tutor import build_lesson, select_target_task, task_examples  # noqa: E402
+
 
 def _send(proc: subprocess.Popen[str], obj: Dict[str, Any]) -> Dict[str, Any]:
     proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -135,15 +139,23 @@ def _grade_task(
             if g_lo == next1.lower():
                 return copy_continue_score, "Good (you continued to the next letter)."
             if next2 and g_lo.startswith(next2.lower()):
-                return min(copy_continue_score + 0.1, 0.95), "Great (you continued two letters)!"
-            return max(0.0, copy_continue_score - 0.05), "Good (you started continuing to the next letter)."
+                return min(
+                    copy_continue_score + 0.1, 0.95
+                ), "Great (you continued two letters)!"
+            return max(
+                0.0, copy_continue_score - 0.05
+            ), "Good (you started continuing to the next letter)."
         # Continued the canonical alphabet beyond current targets (e.g. 'G' -> 'H').
         if g_next1 and g and g[0].lower() == g_next1.lower():
             if g_lo == g_next1.lower():
                 return copy_continue_score, "Good (you continued to a new letter)."
             if g_next2 and g_lo.startswith(g_next2.lower()):
-                return min(copy_continue_score + 0.1, 0.95), "Great (you continued two new letters)!"
-            return max(0.0, copy_continue_score - 0.05), "Good (you started continuing to a new letter)."
+                return min(
+                    copy_continue_score + 0.1, 0.95
+                ), "Great (you continued two new letters)!"
+            return max(
+                0.0, copy_continue_score - 0.05
+            ), "Good (you started continuing to a new letter)."
         # For multi-char copy, getting the first character right is still good progress.
         if e and g and g[0].lower() == e[0].lower():
             return 0.55, "Nice start (first letter right)."
@@ -151,14 +163,20 @@ def _grade_task(
     if task.startswith("next"):
         # Next asked, but they copied the prompt (or its last letter).
         if seq and (g_lo == seq.lower() or g_lo == seq[-1].lower()):
-            return next_copy_score, "Nice try (you copied instead of predicting the next)."
+            return (
+                next_copy_score,
+                "Nice try (you copied instead of predicting the next).",
+            )
         # Ahead-of-curriculum: if we wrapped (expected is the first target), reward the
         # canonical next letter too (e.g. with targets 'ABCD', N:D expects 'A' but 'E' is a good guess).
         if g_next1 and g and g[0].lower() == g_next1.lower():
             if expected and expected[0].lower() != g_next1.lower():
                 if g_next2 and g_lo.startswith(g_next2.lower()):
                     return 0.9, "Great (you predicted a new letter and kept going)!"
-                return 0.8, "Good (you predicted a new letter beyond the current wrap-around)."
+                return (
+                    0.8,
+                    "Good (you predicted a new letter beyond the current wrap-around).",
+                )
         # Off-by-one around the alphabet cycle (first char).
         try:
             prev = alphabet[(alphabet.index(expected[0]) - 1) % len(alphabet)]
@@ -258,7 +276,9 @@ def _grade_with_stats(
         distinct_out = len(set(recent_outputs))
         if distinct_out == 1:
             score *= 0.5
-            reasons.append("Looks like mode collapse (same output for different prompts).")
+            reasons.append(
+                "Looks like mode collapse (same output for different prompts)."
+            )
         else:
             counts: Dict[str, int] = {}
             for ch in recent_outputs:
@@ -274,16 +294,28 @@ def _grade_with_stats(
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Human-in-the-loop tutor stepper for session.py (mimicry first).")
-    p.add_argument("--text-path", default="input.txt", help="Text used to build the vocab.")
-    p.add_argument("--checkpoint", default="", help="Optional checkpoint to load (session format or raw state_dict).")
+    p = argparse.ArgumentParser(
+        description="Human-in-the-loop tutor stepper for session.py (mimicry first)."
+    )
+    p.add_argument(
+        "--text-path", default="input.txt", help="Text used to build the vocab."
+    )
+    p.add_argument(
+        "--checkpoint",
+        default="",
+        help="Optional checkpoint to load (session format or raw state_dict).",
+    )
 
     p.add_argument("--d-model", type=int, default=32)
     p.add_argument("--n-layers", type=int, default=2)
-    p.add_argument("--k-settle", type=int, default=2, help="Settle steps during quiz/generate.")
+    p.add_argument(
+        "--k-settle", type=int, default=2, help="Settle steps during quiz/generate."
+    )
     p.add_argument("--seed", type=int, default=1337)
 
-    p.add_argument("--targets", default="A", help="Characters to practice, e.g. 'A' or 'ABCD'.")
+    p.add_argument(
+        "--targets", default="A", help="Characters to practice, e.g. 'A' or 'ABCD'."
+    )
     p.add_argument(
         "--focus",
         default="",
@@ -306,7 +338,18 @@ def _parse_args() -> argparse.Namespace:
         default="cycle",
         help="How to pick tasks when multiple are enabled (cycle is slower/more predictable).",
     )
-    p.add_argument("--temperature", type=float, default=0.0, help="0.0 = greedy decode (recommended for grading).")
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="0.0 = greedy decode (recommended for grading).",
+    )
+    p.add_argument(
+        "--restep-generate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Re-step the last ingested token before sampling (legacy-compatible).",
+    )
     p.add_argument(
         "--quiz-len",
         type=int,
@@ -321,8 +364,15 @@ def _parse_args() -> argparse.Namespace:
         default=0.0,
         help="AdamW weight decay used during learn() (default 0.0 for tutoring).",
     )
-    p.add_argument("--grad-clip", type=float, default=1.0, help="Global grad-norm clip during learn().")
-    p.add_argument("--k-settle-learn", type=int, default=2, help="Settle steps during learn().")
+    p.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Global grad-norm clip during learn().",
+    )
+    p.add_argument(
+        "--k-settle-learn", type=int, default=2, help="Settle steps during learn()."
+    )
     p.add_argument(
         "--detach-state",
         action=argparse.BooleanOptionalAction,
@@ -330,8 +380,18 @@ def _parse_args() -> argparse.Namespace:
         help="Detach recurrent state each timestep during learn() (faster; disables BPTT through time).",
     )
 
-    p.add_argument("--min-steps", type=int, default=1, help="Min suggested learn steps when score is high.")
-    p.add_argument("--max-steps", type=int, default=6, help="Max suggested learn steps when score is low.")
+    p.add_argument(
+        "--min-steps",
+        type=int,
+        default=1,
+        help="Min suggested learn steps when score is high.",
+    )
+    p.add_argument(
+        "--max-steps",
+        type=int,
+        default=6,
+        help="Max suggested learn steps when score is low.",
+    )
     p.add_argument(
         "--copy-continue-score",
         type=float,
@@ -344,7 +404,12 @@ def _parse_args() -> argparse.Namespace:
         default=0.65,
         help="Partial credit for next tasks when the student copies instead of predicting (0..1).",
     )
-    p.add_argument("--budget-steps", type=int, default=0, help="0 = unlimited; otherwise total learn-step budget.")
+    p.add_argument(
+        "--budget-steps",
+        type=int,
+        default=0,
+        help="0 = unlimited; otherwise total learn-step budget.",
+    )
     p.add_argument(
         "--replay",
         action=argparse.BooleanOptionalAction,
@@ -357,10 +422,30 @@ def _parse_args() -> argparse.Namespace:
         default=1,
         help="Rehearsal weighting during learn(): repeat rehearsal examples this many times (>=1).",
     )
-    p.add_argument("--w-copy", type=int, default=1, help="Rehearsal/drill weight for copy examples (>=0).")
-    p.add_argument("--w-copy2", type=int, default=1, help="Rehearsal/drill weight for copy2 examples (>=0).")
-    p.add_argument("--w-next", type=int, default=1, help="Rehearsal/drill weight for next examples (>=0).")
-    p.add_argument("--w-next2", type=int, default=1, help="Rehearsal/drill weight for next2 examples (>=0).")
+    p.add_argument(
+        "--w-copy",
+        type=int,
+        default=1,
+        help="Rehearsal/drill weight for copy examples (>=0).",
+    )
+    p.add_argument(
+        "--w-copy2",
+        type=int,
+        default=1,
+        help="Rehearsal/drill weight for copy2 examples (>=0).",
+    )
+    p.add_argument(
+        "--w-next",
+        type=int,
+        default=1,
+        help="Rehearsal/drill weight for next examples (>=0).",
+    )
+    p.add_argument(
+        "--w-next2",
+        type=int,
+        default=1,
+        help="Rehearsal/drill weight for next2 examples (>=0).",
+    )
     p.add_argument(
         "--reset-each-round",
         action=argparse.BooleanOptionalAction,
@@ -399,6 +484,7 @@ def _print_help() -> None:
         "  detach on|off     toggle detach_state during learn\n"
         "  replay on|off     toggle rehearsal mix-in\n"
         "  reset on|off      toggle reset_each_round\n"
+        "  restep on|off     toggle legacy generate re-step behavior\n"
         "  drill <int>       run learn() across all targets\n"
         "  exam              quiz all targets (retention)\n"
         "  save <path>       save checkpoint\n"
@@ -452,6 +538,7 @@ def main() -> None:
     weight_decay = float(args.weight_decay)
     grad_clip = float(args.grad_clip)
     temperature = float(args.temperature)
+    restep_generate = bool(args.restep_generate)
     reset_each_round = bool(args.reset_each_round)
     detach_state = bool(args.detach_state)
     replay = bool(args.replay)
@@ -504,6 +591,8 @@ def main() -> None:
     ]
     if args.checkpoint:
         cmd += ["--checkpoint", str(args.checkpoint)]
+    if not restep_generate:
+        cmd += ["--no-restep-generate"]
 
     proc = subprocess.Popen(
         cmd,
@@ -524,35 +613,19 @@ def main() -> None:
         while True:
             round_i += 1
             sel = focus if focus else targets
-            if order == "sequential":
-                target = sel[seq_index % len(sel)]
-                seq_index += 1
-            else:
-                target = tutor_rng.choice(sel)
-
-            if len(tasks) == 1:
-                task = tasks[0]
-            elif task_order == "cycle":
-                task = tasks[task_index % len(tasks)]
-                task_index += 1
-            else:
-                task = tutor_rng.choice(tasks)
-
-            alphabet_tag = "".join(targets)
-            seq = target
-            prompt = target
-            expected = target
-            if task == "copy2":
-                seq = target + _succ(target, targets)
-                prompt = seq
-                expected = seq
-            elif task == "next":
-                prompt = f"N:{alphabet_tag}:{seq}:n"
-                expected = _succ(seq[-1], targets)
-            elif task == "next2":
-                seq = target + _succ(target, targets)
-                prompt = f"N:{alphabet_tag}:{seq}:n"
-                expected = _succ(seq[-1], targets)
+            target, task, seq_index, task_index = select_target_task(
+                sel,
+                tasks,
+                order=order,
+                task_order=task_order,
+                seq_index=seq_index,
+                task_index=task_index,
+                rng=tutor_rng,
+            )
+            lesson = build_lesson(task, target, targets)
+            seq = lesson.seq
+            prompt = lesson.prompt
+            expected = lesson.expected
 
             gen_len = int(len(expected))
             if task.startswith("next"):
@@ -561,7 +634,9 @@ def main() -> None:
             if reset_each_round:
                 _send(proc, {"cmd": "reset"})
 
-            _send(proc, {"cmd": "ingest", "text": f"T:{prompt} S:", "k_settle": k_settle})
+            _send(
+                proc, {"cmd": "ingest", "text": f"T:{prompt} S:", "k_settle": k_settle}
+            )
             out = _send(
                 proc,
                 {
@@ -569,6 +644,7 @@ def main() -> None:
                     "max_new_tokens": int(gen_len),
                     "temperature": temperature,
                     "k_settle": k_settle,
+                    "restep_last_token": bool(restep_generate),
                 },
             )
             got = str(out.get("text", ""))
@@ -605,24 +681,39 @@ def main() -> None:
 
             entropy = _safe_float(stats.get("logits_entropy"))
             deltas = stats.get("delta_per_k")
-            d_str = f"delta={deltas}" if isinstance(deltas, list) and deltas else "delta=?"
+            d_str = (
+                f"delta={deltas}" if isinstance(deltas, list) and deltas else "delta=?"
+            )
             e_str = "H=?" if math.isnan(entropy) else f"H={entropy:.2f}"
 
             budget_str = "unlimited" if budget_left is None else str(budget_left)
             focus_str = "" if not focus else f" | focus={''.join(focus)!r}"
-            print(f"\nRound {round_i} | targets={''.join(targets)!r}{focus_str} | k={k_settle} | budget={budget_str}")
+            print(
+                f"\nRound {round_i} | targets={''.join(targets)!r}{focus_str} | k={k_settle} | budget={budget_str}"
+            )
             print(f"  tasks={','.join(tasks)} | task_order={task_order}")
-            print(f"  lr={lr:g} | weight_decay={weight_decay:g} | grad_clip={grad_clip:g}")
-            print(f"  copycont={copy_continue_score:.2f} | nextcopy={next_copy_score:.2f} | rehearsal_mult={rehearsal_mult}")
-            print(f"  w_copy={w_copy} | w_copy2={w_copy2} | w_next={w_next} | w_next2={w_next2}")
-            print(f"  task={task} | prompt={prompt!r} | expected={expected!r} | student={got!r} (gen_len={gen_len})")
+            print(
+                f"  lr={lr:g} | weight_decay={weight_decay:g} | grad_clip={grad_clip:g}"
+            )
+            print(
+                f"  copycont={copy_continue_score:.2f} | nextcopy={next_copy_score:.2f} | rehearsal_mult={rehearsal_mult}"
+            )
+            print(
+                f"  w_copy={w_copy} | w_copy2={w_copy2} | w_next={w_next} | w_next2={w_next2}"
+            )
+            print(
+                f"  task={task} | prompt={prompt!r} | expected={expected!r} | "
+                f"student={got!r} (gen_len={gen_len}, restep={restep_generate})"
+            )
             print(f"  base_score={base_score:.2f} ({base_msg})")
             print(f"  score={score:.2f} | {e_str} | {d_str}")
             print(f"  sentiment: {sentiment}")
 
             suggested = 0
             if not (base_score >= 1.0 and score >= 0.9):
-                suggested = _steps_from_score(score, min_steps=int(args.min_steps), max_steps=int(args.max_steps))
+                suggested = _steps_from_score(
+                    score, min_steps=int(args.min_steps), max_steps=int(args.max_steps)
+                )
                 suggested = max(1, int(suggested))
             if budget_left is not None:
                 suggested = min(int(suggested), int(budget_left))
@@ -665,26 +756,16 @@ def main() -> None:
                     if budget_left is not None and budget_left <= 0:
                         print("Budget exhausted.")
                         continue
-                    drill_examples: List[Dict[str, str]] = []
-                    alpha_tag = "".join(targets)
-                    for ch in targets:
-                        if "copy" in tasks:
-                            drill_examples.extend([{"prompt": ch, "answer": ch}] * max(w_copy, 0))
-                        if "copy2" in tasks:
-                            seq2 = ch + _succ(ch, targets)
-                            drill_examples.extend([{"prompt": seq2, "answer": seq2}] * max(w_copy2, 0))
-                        if "next" in tasks:
-                            drill_examples.extend(
-                                [{"prompt": f"N:{alpha_tag}:{ch}:n", "answer": _succ(ch, targets)}] * max(w_next, 0)
-                            )
-                        if "next2" in tasks:
-                            seq2 = ch + _succ(ch, targets)
-                            drill_examples.extend(
-                                [
-                                    {"prompt": f"N:{alpha_tag}:{seq2}:n", "answer": _succ(seq2[-1], targets)}
-                                ]
-                                * max(w_next2, 0)
-                            )
+                    drill_examples = task_examples(
+                        targets,
+                        tasks,
+                        weights={
+                            "copy": w_copy,
+                            "copy2": w_copy2,
+                            "next": w_next,
+                            "next2": w_next2,
+                        },
+                    )
 
                     resp = _send(
                         proc,
@@ -712,33 +793,25 @@ def main() -> None:
                     break
                 if raw == "exam":
                     print("\nExam (retention):")
-                    alpha_tag = "".join(targets)
                     for ch in targets:
                         for tsk in tasks:
-                            if tsk == "copy":
-                                seq2 = ch
-                                prompt2 = ch
-                                expected2 = ch
-                            elif tsk == "copy2":
-                                seq2 = ch + _succ(ch, targets)
-                                prompt2 = seq2
-                                expected2 = seq2
-                            elif tsk == "next":
-                                seq2 = ch
-                                prompt2 = f"N:{alpha_tag}:{ch}:n"
-                                expected2 = _succ(ch, targets)
-                            elif tsk == "next2":
-                                seq2 = ch + _succ(ch, targets)
-                                prompt2 = f"N:{alpha_tag}:{seq2}:n"
-                                expected2 = _succ(seq2[-1], targets)
-                            else:
-                                raise RuntimeError(f"Unknown task {tsk!r}")
+                            lesson2 = build_lesson(tsk, ch, targets)
+                            seq2 = lesson2.seq
+                            prompt2 = lesson2.prompt
+                            expected2 = lesson2.expected
 
                             gen2 = int(len(expected2))
                             if tsk.startswith("next"):
                                 gen2 = max(int(quiz_len), int(gen2))
                             _send(proc, {"cmd": "reset"})
-                            _send(proc, {"cmd": "ingest", "text": f"T:{prompt2} S:", "k_settle": k_settle})
+                            _send(
+                                proc,
+                                {
+                                    "cmd": "ingest",
+                                    "text": f"T:{prompt2} S:",
+                                    "k_settle": k_settle,
+                                },
+                            )
                             out2 = _send(
                                 proc,
                                 {
@@ -746,6 +819,7 @@ def main() -> None:
                                     "max_new_tokens": int(gen2),
                                     "temperature": temperature,
                                     "k_settle": k_settle,
+                                    "restep_last_token": bool(restep_generate),
                                 },
                             )
                             got2 = str(out2.get("text", ""))
@@ -764,7 +838,9 @@ def main() -> None:
                                 recent_prompts=recent_prompts,
                                 recent_outputs=recent_outputs,
                             )
-                            print(f"  {tsk}:{prompt2!r} -> {got2!r} (exp {expected2!r}) | score={s2:.2f} | {msg2}")
+                            print(
+                                f"  {tsk}:{prompt2!r} -> {got2!r} (exp {expected2!r}) | score={s2:.2f} | {msg2}"
+                            )
                     continue
                 if raw.startswith("targets "):
                     _, val = raw.split(" ", 1)
@@ -772,8 +848,13 @@ def main() -> None:
                     if not targets:
                         print("Need at least 1 target.")
                         continue
-                    if any(t in {"next", "next2", "copy2"} for t in tasks) and len(targets) < 2:
-                        print("Need at least 2 targets for copy2/next/next2; keeping previous targets.")
+                    if (
+                        any(t in {"next", "next2", "copy2"} for t in tasks)
+                        and len(targets) < 2
+                    ):
+                        print(
+                            "Need at least 2 targets for copy2/next/next2; keeping previous targets."
+                        )
                         continue
                     focus = [ch for ch in focus if ch in targets]
                     seq_index = 0
@@ -819,7 +900,10 @@ def main() -> None:
                             new_tasks.append(tt)
                     if not new_tasks:
                         continue
-                    if any(t in {"next", "next2", "copy2"} for t in new_tasks) and len(targets) < 2:
+                    if (
+                        any(t in {"next", "next2", "copy2"} for t in new_tasks)
+                        and len(targets) < 2
+                    ):
                         print("Need at least 2 targets for copy2/next/next2.")
                         continue
                     tasks = new_tasks
@@ -959,6 +1043,18 @@ def main() -> None:
                         continue
                     print(f"reset_each_round = {reset_each_round}")
                     continue
+                if raw.startswith("restep "):
+                    _, val = raw.split(" ", 1)
+                    val = val.strip().lower()
+                    if val in {"on", "true", "1", "yes"}:
+                        restep_generate = True
+                    elif val in {"off", "false", "0", "no"}:
+                        restep_generate = False
+                    else:
+                        print("Usage: restep on|off")
+                        continue
+                    print(f"restep_generate = {restep_generate}")
+                    continue
                 if raw.startswith("replay "):
                     _, val = raw.split(" ", 1)
                     val = val.strip().lower()
@@ -1009,30 +1105,24 @@ def main() -> None:
                 continue
 
             if budget_left is not None and budget_left <= 0:
-                print("Budget exhausted. Use 'save' then restart with a new budget, or set --budget-steps 0.")
+                print(
+                    "Budget exhausted. Use 'save' then restart with a new budget, or set --budget-steps 0."
+                )
                 continue
 
-            current_example = {"prompt": prompt, "answer": expected}
+            current_example = lesson.example()
             rehearsal_examples: List[Dict[str, str]] = []
             if replay:
-                for ch in targets:
-                    if "copy" in tasks:
-                        rehearsal_examples.extend([{"prompt": ch, "answer": ch}] * max(w_copy, 0))
-                    if "copy2" in tasks:
-                        seq2 = ch + _succ(ch, targets)
-                        rehearsal_examples.extend([{"prompt": seq2, "answer": seq2}] * max(w_copy2, 0))
-                    if "next" in tasks:
-                        rehearsal_examples.extend(
-                            [{"prompt": f"N:{alphabet_tag}:{ch}:n", "answer": _succ(ch, targets)}] * max(w_next, 0)
-                        )
-                    if "next2" in tasks:
-                        seq2 = ch + _succ(ch, targets)
-                        rehearsal_examples.extend(
-                            [
-                                {"prompt": f"N:{alphabet_tag}:{seq2}:n", "answer": _succ(seq2[-1], targets)}
-                            ]
-                            * max(w_next2, 0)
-                        )
+                rehearsal_examples = task_examples(
+                    targets,
+                    tasks,
+                    weights={
+                        "copy": w_copy,
+                        "copy2": w_copy2,
+                        "next": w_next,
+                        "next2": w_next2,
+                    },
+                )
 
             learn_resp = _send(
                 proc,

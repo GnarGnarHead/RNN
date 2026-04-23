@@ -151,22 +151,24 @@ For research-style tutoring, use the stepper REPL. It quizzes → grades → sug
 python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 ```
 
-### Important: avoid “starving” target/task combinations
+### Target/task coverage
 
-If you use both:
+The stepper schedules:
 
-- `order seq` (sequential target selection), and
-- `taskorder cycle` (cyclic task selection)
+- `order seq` + `taskorder cycle` as a flattened target × task cross-product
+- random order modes as exploratory sampling
 
-…the REPL advances both indices together and only visits **some** `(target, task)` pairs. When the number of selected targets and tasks share a factor (e.g. 2 targets + 2 tasks), you can accidentally *never* practice critical pairs (like `copy:H` or `copy2:GH`).
-
-Fix: switch either dimension to random (`taskorder rand` is usually enough), or teach in short phases (e.g. `focus H` with `tasks copy` first, then add `copy2/next`).
+That means `focus GH` with `tasks copy,copy2`, for example, will practice
+`copy:G`, `copy2:G`, `copy:H`, and `copy2:H` before repeating. For exploratory
+tutoring, `taskorder rand` is still useful, but it is no longer required just to
+avoid starving a critical pair.
 
 Useful commands inside the REPL:
 
 - `targets AB` (change practice set)
 - `add C` (add letters)
 - `k 4` / `kl 4` (change settle steps for quiz / learn)
+- `restep on|off` (toggle legacy generation re-step behavior; default is on for checkpoint compatibility)
 - `detach on|off` (toggle detach during learn; default is off)
 - `order seq` (practice in alphabetical order)
 - `tasks copy,next` / `taskorder rand|cycle` (mix tasks slowly)

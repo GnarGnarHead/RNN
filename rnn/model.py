@@ -88,18 +88,26 @@ class SettleCharLM(nn.Module):
 
         self.state: torch.Tensor | None = None
         self.last_token_id: torch.Tensor | None = None
+        self.last_logits: torch.Tensor | None = None
+        self.last_step_stats: Dict[str, torch.Tensor] | None = None
 
     def reset_state(self, batch_size: int = 1) -> None:
         p = next(self.parameters())
-        self.state = torch.zeros((batch_size, self.cfg.d_model), device=p.device, dtype=p.dtype)
+        self.state = torch.zeros(
+            (batch_size, self.cfg.d_model), device=p.device, dtype=p.dtype
+        )
         self.last_token_id = None
+        self.last_logits = None
+        self.last_step_stats = None
 
     def _k_settle(self, k_settle: int | None) -> int:
         k = int(self.cfg.k_settle if k_settle is None else k_settle)
         if k <= 0:
             raise ValueError(f"k_settle must be >= 1, got {k}")
         if k > int(self.cfg.max_k_settle):
-            raise ValueError(f"k_settle too large (max {self.cfg.max_k_settle}), got {k}")
+            raise ValueError(
+                f"k_settle too large (max {self.cfg.max_k_settle}), got {k}"
+            )
         return k
 
     def step(
@@ -115,13 +123,19 @@ class SettleCharLM(nn.Module):
         Updates internal recurrent state.
         """
         if self.state is None:
-            raise RuntimeError("State is not initialized. Call reset_state(batch_size=...) first.")
+            raise RuntimeError(
+                "State is not initialized. Call reset_state(batch_size=...) first."
+            )
         if token_id.ndim != 1:
-            raise ValueError(f"token_id must have shape (B,), got {tuple(token_id.shape)}")
+            raise ValueError(
+                f"token_id must have shape (B,), got {tuple(token_id.shape)}"
+            )
         if token_id.dtype != torch.long:
             raise ValueError(f"token_id must be torch.long, got {token_id.dtype}")
         if token_id.device != self.state.device:
-            raise ValueError("token_id device does not match state device. Move inputs or reset_state().")
+            raise ValueError(
+                "token_id device does not match state device. Move inputs or reset_state()."
+            )
         if token_id.shape[0] != self.state.shape[0]:
             raise ValueError(
                 f"token batch size {token_id.shape[0]} does not match state batch size {self.state.shape[0]}"
@@ -182,23 +196,31 @@ class SettleCharLM(nn.Module):
             "logits_entropy": entropy.detach(),
             "state_norm": state_norm.detach(),
         }
+        self.last_logits = logits.detach()
+        self.last_step_stats = stats
         return logits, stats
 
     def forward_sequence(
-        self, x: torch.Tensor, *, k_settle: int | None = None, detach_state: bool | None = None
+        self,
+        x: torch.Tensor,
+        *,
+        k_settle: int | None = None,
+        detach_state: bool | None = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         x: (B, T) token ids
         returns logits: (B, T, V)
         """
         if self.state is None:
-            raise RuntimeError("State is not initialized. Call reset_state(batch_size=...) first.")
+            raise RuntimeError(
+                "State is not initialized. Call reset_state(batch_size=...) first."
+            )
         if x.ndim != 2:
             raise ValueError(f"x must have shape (B, T), got {tuple(x.shape)}")
         if x.dtype != torch.long:
             raise ValueError(f"x must be torch.long, got {x.dtype}")
 
-        bsz, seq = x.shape
+        _, seq = x.shape
         k = self._k_settle(k_settle)
         delta_accum = torch.zeros((k,), device=x.device, dtype=torch.float32)
         entropy_accum = torch.tensor(0.0, device=x.device)
@@ -225,16 +247,36 @@ class SettleCharLM(nn.Module):
 
     @torch.no_grad()
     def generate(
-        self, max_new_tokens: int, *, temperature: float = 1.0, k_settle: int | None = None
+        self,
+        max_new_tokens: int,
+        *,
+        temperature: float = 1.0,
+        k_settle: int | None = None,
+        restep_last_token: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Generates tokens by repeatedly calling step() starting from last_token_id.
+
+        restep_last_token=True preserves the original checkpoint-compatible
+        behavior: the last ingested token is stepped again before sampling the
+        first generated token. restep_last_token=False samples the first token
+        from the cached logits produced by the previous step(), then ingests
+        generated tokens as they are sampled.
+
         Returns (token_ids, last_stats) where token_ids has shape (B, max_new_tokens).
         """
         if self.state is None:
-            raise RuntimeError("State is not initialized. Call reset_state(batch_size=...) first.")
+            raise RuntimeError(
+                "State is not initialized. Call reset_state(batch_size=...) first."
+            )
         if self.last_token_id is None:
-            raise RuntimeError("No last_token_id. Call step() at least once before generate().")
+            raise RuntimeError(
+                "No last_token_id. Call step() at least once before generate()."
+            )
+        if not restep_last_token and self.last_logits is None:
+            raise RuntimeError(
+                "No cached logits. Call step() at least once before generate()."
+            )
         if max_new_tokens <= 0:
             raise ValueError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
 
@@ -248,10 +290,18 @@ class SettleCharLM(nn.Module):
             entropy_accum = torch.tensor(0.0, device=token.device)
             last_stats: Dict[str, torch.Tensor] = {}
 
+            logits = self.last_logits
+
             for _ in range(max_new_tokens):
-                logits, last_stats = self.step(token, k_settle=k)
-                delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
-                entropy_accum += last_stats["logits_entropy"].to(entropy_accum.dtype)
+                if restep_last_token:
+                    logits, last_stats = self.step(token, k_settle=k)
+                    delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
+                    entropy_accum += last_stats["logits_entropy"].to(
+                        entropy_accum.dtype
+                    )
+                elif logits is None:
+                    raise RuntimeError("No cached logits available for generation.")
+
                 temp = float(temperature)
                 if temp <= 0.0:
                     token = torch.argmax(logits, dim=-1)
@@ -261,12 +311,21 @@ class SettleCharLM(nn.Module):
                     token = torch.multinomial(probs, num_samples=1).squeeze(1)
                 out.append(token)
 
+                if not restep_last_token:
+                    logits, last_stats = self.step(token, k_settle=k)
+                    delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
+                    entropy_accum += last_stats["logits_entropy"].to(
+                        entropy_accum.dtype
+                    )
+
             self.last_token_id = token
             stats_out = {
                 "k_settle": torch.tensor(k, device=token.device),
                 "delta_per_k": (delta_accum / max_new_tokens).detach(),
                 "logits_entropy": (entropy_accum / max_new_tokens).detach(),
-                "state_norm": last_stats["state_norm"].detach() if last_stats else torch.tensor(float("nan")),
+                "state_norm": last_stats["state_norm"].detach()
+                if last_stats
+                else torch.tensor(float("nan")),
             }
             return torch.stack(out, dim=1), stats_out
         finally:

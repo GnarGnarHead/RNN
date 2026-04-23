@@ -151,7 +151,8 @@ Root cause (process bug, not necessarily a model limitation):
 
 Fix for next attempt:
 
-- Use `taskorder rand` (recommended) or `order rand` to cover the cross-product of targets × tasks, **especially** when using `focus`.
+- Current code now schedules `order seq` + `taskorder cycle` as a flattened target × task cross-product, so the exact starvation bug should not recur.
+- `taskorder rand` remains useful for exploratory practice, especially after a regression.
 - Or teach in short phases:
   1) `focus H` + `tasks copy` until `H→H`
   2) `focus G` + `tasks copy2,next` until `GH→GH` and `N:...:G:n→H`

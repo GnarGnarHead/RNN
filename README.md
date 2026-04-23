@@ -1,77 +1,72 @@
-# RNN — settle-before-decode (no attention) + tutor loop
+# RNN
 
-This repository is a small experimental lab exploring a specific combination of ideas:
+This project tests whether a tiny, attention-free recurrent character model can learn through a dynamic external tutor rather than bulk training alone.
 
-1) An **attentionless** character-level language model with a recurrent **internal settling loop** (iterative inference per token)
-2) A **human-in-the-loop tutor / stepper workflow** that treats training as ongoing *maintenance* (partial credit, regression, rehearsal)
+The model is deliberately small and CPU-friendly. The interesting part is the loop around it: a human/Codex tutor quizzes the model, grades the response with partial credit, applies small approved updates, and keeps checking whether old skills survive after state resets.
 
-It is not a production model, not a transformer replacement, and not a benchmark chase. It’s meant to be small, CPU-friendly, and inspectable.
+## Core Idea
 
-If you want the longer design brief(s), start with `brief.md`.
+The model is a character-level language model with no attention. For each input character it:
 
-## What this is (at a glance)
+1. Embeds the current character.
+2. Injects the previous recurrent state through a learned gate.
+3. Runs a shared residual MLP core for `K` internal settle iterations.
+4. Logs per-iteration movement as `delta[k]`.
+5. Decodes the next character from the settled state.
 
-- Character-level LM (tiny vocab; abstractions must emerge in the hidden state)
-- **K internal iterations per token** (shared weights), then decode
-- Instrumentation for **convergence vs oscillation** inside the settle loop (`delta[k]`)
-- Recurrent **state carried across tokens** (gated injection; optional detach/no-detach)
-- Interactive tutor loop for structured lessons and retention checks
+The research question is not raw language-modeling performance. It is whether structured tutoring plus recurrent settling can produce inspectable learning dynamics: retention, forgetting, repair, and curriculum growth.
 
-## Core idea: iterative inference per token
+## Dynamic Tutor Loop
 
-Instead of emitting logits after one pass, the model does a small “think loop” per token:
+The tutor is meant to stay dynamic. It is not a fixed benchmark, reward script, or static curriculum.
 
-1. Embed current character
-2. Optionally inject a recurrent state from the previous token (gated; optionally normalized)
-3. Apply an **attentionless residual MLP core** (norm → MLP → residual) **K times**
-4. Track per-iteration change magnitude (`delta[k]`)
-5. Emit logits *after* the state has (hopefully) settled
+The current workflow starts like a kindergarten lesson:
 
-This treats recurrence as **inference-time computation**, not just “memory across time.”
+- teach copy tasks: `T:A S:A`
+- quiz with the answer omitted: `T:A S:`
+- reset state before retention checks, so success lives in weights rather than working memory
+- expand slowly: letters -> next-letter prediction -> digrams -> words/sentences
+- interleave rehearsal so new lessons do not overwrite old ones
 
-## What we actually study
+The tutor can respond to symptoms:
 
-This repo is intentionally scoped to small, sharp questions:
+- copy breaks -> regress to copy drills
+- next-letter prediction collapses -> separate prompts and rehearse old targets
+- output repeats across different prompts -> treat it as attractor collapse
+- settle deltas expand -> reduce scope or increase settling/check dynamics
 
-- Does increasing internal iteration K improve loss per unit compute?
-- Do internal states converge, oscillate, or collapse to bland attractors?
-- What changes when we detach vs backprop through time?
-- Does “thinking longer” help on structured tasks vs free-form text?
+See [TUTOR.md](TUTOR.md) for the live teaching method and [PROGRESS.md](PROGRESS.md) for the checkpoints and observed failure modes.
 
-No claims are made beyond what can be measured at this scale.
+## Current Best Milestone
 
-## Tutor loop: education-by-maintenance (why this isn’t just a toy RNN)
+The current best local milestone is:
 
-Alongside standard training, the repo includes a manual tutoring workflow intended to probe *continual learning* dynamics:
+```text
+checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt
+```
 
-- Interactive prompt → model response
-- Human grading (often **intent/partial-credit** rather than brittle exact-match)
-- Small supervised updates (only with approval)
-- Rehearsal / retention checks to surface forgetting
-- Symptom-driven regression (if spelling breaks, regress to spelling drills; if copying breaks, regress to mimicry)
+It demonstrates retention, with state reset before each quiz, for:
 
-The hypothesis in the briefs is that a useful system isn’t one that “converges forever,” but one that can be **maintained**: detect drift, repair it, and keep going.
+- `copy`: `A -> A ... G -> G`
+- `copy2`: `AB -> AB ... GA -> GA`
+- `next`: `N:ABCDEFG:A:n -> B ... N:ABCDEFG:G:n -> A`
+- `next2`: `N:ABCDEFG:AB:n -> C ... N:ABCDEFG:GA:n -> B`
 
-## What this is not
+Run the noninteractive exam:
 
-- Not SOTA language modeling
-- Not a transformer replacement
-- Not an AGI proposal
-- Not benchmark-competitive
+```bash
+python3 scripts/exam_checkpoint.py \
+  --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt \
+  --targets ABCDEFG \
+  --tasks copy,copy2,next,next2
+```
 
-## Repo map
-
-- `settle_rnn_charlm.py`: main CPU training script (K-sweep, delta logging, sampling)
-- `scripts/tutor_stepper.py`: interactive tutoring stepper (mimicry-first curriculum)
-- `TUTOR.md`: tutoring method + session protocol notes
-- `PROGRESS.md`: what’s been demonstrated so far
-- `rnn/`: reusable model/session/vocab helpers
-- `checkpoints/`: local checkpoints (kept small; treated as local artifacts)
-- `runs/`: optional logs + samples
+The checkpoints themselves are local artifacts and ignored by git. See [docs/checkpoints.md](docs/checkpoints.md) for the checkpoint manifest.
 
 ## Quickstart
 
-1) Create a venv and install deps:
+Create a virtual environment and install the single runtime dependency:
 
 ```bash
 python3 -m venv .venv
@@ -79,71 +74,87 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2) Provide training text:
-
-- Put your own `input.txt` next to `settle_rnn_charlm.py`, or
-- Download Tiny Shakespeare:
+Provide a local training corpus:
 
 ```bash
 python3 scripts/download_tiny_shakespeare.py --out input.txt
 ```
 
-3) Train a baseline run:
+Train a baseline character model:
 
 ```bash
-python3 settle_rnn_charlm.py --k-settle 2
+python3 settle_rnn_charlm.py --text-path input.txt --k-settle 2
 ```
 
-By default the script detaches recurrent state each timestep (no BPTT through time) and RMS-norms the state before injecting it. To enable full BPTT or disable state normalization:
+Run a K sweep and write logs/samples under `runs/`:
 
 ```bash
-python3 settle_rnn_charlm.py --no-detach-state --no-state-norm
+python3 settle_rnn_charlm.py \
+  --text-path input.txt \
+  --steps 8000 \
+  --sweep-k 1 2 4 8 \
+  --out-dir runs \
+  --run-name sweep
 ```
 
-4) Sweep K:
-
-```bash
-python3 settle_rnn_charlm.py --steps 8000 --sweep-k 1 2 4 8
-```
-
-Optional: write logs + samples under `runs/`:
-
-```bash
-python3 settle_rnn_charlm.py --steps 8000 --sweep-k 1 2 4 8 --out-dir runs --run-name sweep
-```
-
-## What to look for
-
-- `loss` vs steps
-- `delta[k]` decreasing with `k` (per-token settle convergence)
-- `logits_entropy` and `state_norm` staying sane (avoid trivial collapse)
-- samples: less chaotic with larger K without repetition/mode collapse
-
-## Tutor stepper (human in the loop)
-
-Interactive REPL that quizzes → grades → proposes a correction, then waits for approval before applying any training steps:
+Start the dynamic tutor stepper:
 
 ```bash
 python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 ```
 
-Tutoring notes (including the session protocol used by the stepper) live in `TUTOR.md`.
+Run the stepper against a checkpoint:
 
-## Experiments to try
+```bash
+python3 scripts/tutor_stepper.py \
+  --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt \
+  --targets ABCDEFG \
+  --tasks copy,copy2,next,next2
+```
 
-- Compute-matched K sweep: `--sweep-k 1 2 4 8`, compare loss + `delta[k]` + samples
-- Remove recurrence baseline: add `--no-state` and see what K buys you without cross-token state
-- Detach vs full BPTT: compare `--detach-state` vs `--no-detach-state`
-- State injection normalization: `--state-norm` vs `--no-state-norm`
-- Tutor curriculum: start with mimicry (A→A), expand target set, and watch retention under interleaved rehearsal
+Inside the REPL, use `exam` for a retention check, `drill <n>` for interleaved rehearsal, and `save checkpoints/name.pt` after a milestone.
 
-## Planned directions (not implemented yet)
+By default, generation uses the original checkpoint-compatible behavior: it re-steps the last ingested token before sampling. Use `--no-restep-generate` when you want the cleaner mode that samples the first generated token from the cached logits produced during ingest.
 
-These are discussed in the briefs, but not fully built here:
+## Repo Map
 
-- Replace full-width feedback with a low-bandwidth “context bus” (compressed recurrent signal)
-- Add an explicit PAUSE/WAIT capability (extra internal steps without emitting output)
+- [settle_rnn_charlm.py](settle_rnn_charlm.py): CPU training script for the base char LM, K sweeps, logging, and samples.
+- [session.py](session.py): JSONL process that keeps recurrent state alive and exposes `reset`, `ingest`, `generate`, `learn`, `save`, and `load`.
+- [scripts/tutor_stepper.py](scripts/tutor_stepper.py): interactive dynamic tutor REPL.
+- [scripts/exam_checkpoint.py](scripts/exam_checkpoint.py): noninteractive retention exam for checkpoints.
+- [rnn/model.py](rnn/model.py): attention-free recurrent settle-loop model.
+- [rnn/session.py](rnn/session.py): session wrapper and supervised learning helper.
+- [rnn/tutor.py](rnn/tutor.py): reusable lesson construction, scheduling, and grading helpers.
+- [tests/](tests): focused tests for tutor task construction and scheduler coverage.
+- [TUTOR.md](TUTOR.md): teaching protocol and operator notes.
+- [PROGRESS.md](PROGRESS.md): research log and checkpoint history.
+- [docs/checkpoints.md](docs/checkpoints.md): local checkpoint manifest and verification commands.
+- [docs/briefs/](docs/briefs): older research briefs and design notes.
+
+## What To Watch
+
+During training or tutoring, track:
+
+- `loss`
+- `delta[k]` across settle iterations
+- `logits_entropy`
+- `state_norm`
+- retention after `reset`
+- repeated outputs across different prompts
+
+Useful experiments:
+
+- Compare `--sweep-k 1 2 4 8`.
+- Compare `--detach-state` and `--no-detach-state`.
+- Compare `--state-norm` and `--no-state-norm`.
+- Disable recurrence with `--no-state`.
+- Expand tutor targets gradually and keep rehearsal on.
+- Compare legacy generation with `--restep-generate` vs `--no-restep-generate` before training new milestones.
 
 ## Notes
 
-- If `pip install -r requirements.txt` installs a GPU build of PyTorch on your machine, install CPU wheels instead (see the official PyTorch install instructions for your platform).
+- Default device is CPU.
+- Keep `input.txt`, `data/`, `runs/`, and checkpoints local-only.
+- If you add dependencies, update [requirements.txt](requirements.txt).
+- If a new training phase works, record the command and result in [PROGRESS.md](PROGRESS.md).

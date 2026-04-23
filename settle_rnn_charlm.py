@@ -46,6 +46,7 @@ class Cfg:
     sample_len: int = 400
     temperature: float = 0.9
     start_text: str = "To be"
+    restep_generate: bool = True
 
 
 def set_seed(seed: int) -> None:
@@ -106,7 +107,12 @@ def sample(
     for tid in start_ids:
         model.step(torch.tensor([tid], device=device), k_settle=cfg.k_settle)
 
-    gen_ids, _ = model.generate(length, temperature=cfg.temperature, k_settle=cfg.k_settle)
+    gen_ids, _ = model.generate(
+        length,
+        temperature=cfg.temperature,
+        k_settle=cfg.k_settle,
+        restep_last_token=cfg.restep_generate,
+    )
     return start + vocab.decode(gen_ids[0].tolist())
 
 
@@ -141,13 +147,17 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
     )
 
     model = SettleCharLM(vocab.size, model_cfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    opt = torch.optim.AdamW(
+        model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+    )
 
     run_dir: Path | None = None
     log_f = None
     if out_dir is not None:
         run_dir = _ensure_out_dir(out_dir, run_name or time.strftime("%Y%m%d-%H%M%S"))
-        (run_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8")
+        (run_dir / "config.json").write_text(
+            json.dumps(asdict(cfg), indent=2) + "\n", encoding="utf-8"
+        )
         log_f = open(run_dir / "log.jsonl", "a", encoding="utf-8")
 
     t0 = time.time()
@@ -179,8 +189,12 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
                             "loss": float(loss.item()),
                             "dt_s": float(dt),
                             "delta_per_k": [float(v) for v in delta],
-                            "state_norm": float(stats["state_norm"].detach().cpu().item()),
-                            "logits_entropy": float(stats["logits_entropy"].detach().cpu().item()),
+                            "state_norm": float(
+                                stats["state_norm"].detach().cpu().item()
+                            ),
+                            "logits_entropy": float(
+                                stats["logits_entropy"].detach().cpu().item()
+                            ),
                         }
                     )
                     + "\n"
@@ -189,19 +203,25 @@ def train(cfg: Cfg, *, out_dir: Path | None = None, run_name: str = "") -> None:
             t0 = time.time()
 
         if cfg.sample_every > 0 and step % cfg.sample_every == 0:
-            s = sample(model, start=cfg.start_text, vocab=vocab, cfg=cfg, length=cfg.sample_len)
+            s = sample(
+                model, start=cfg.start_text, vocab=vocab, cfg=cfg, length=cfg.sample_len
+            )
             print("\n--- SAMPLE ---")
             print(s)
             print("--------------\n")
             if run_dir is not None:
-                (run_dir / f"sample_step{step}.txt").write_text(s + "\n", encoding="utf-8")
+                (run_dir / f"sample_step{step}.txt").write_text(
+                    s + "\n", encoding="utf-8"
+                )
 
     if log_f is not None:
         log_f.close()
 
 
 def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="CPU-only settle-before-decode char LM (no attention).")
+    p = argparse.ArgumentParser(
+        description="CPU-only settle-before-decode char LM (no attention)."
+    )
 
     p.add_argument("--text-path", default=Cfg.text_path)
     p.add_argument("--device", default=Cfg.device)
@@ -216,7 +236,9 @@ def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dropout", type=float, default=Cfg.dropout)
     p.add_argument("--state-alpha", type=float, default=Cfg.state_alpha)
 
-    p.add_argument("--no-state", action="store_true", help="Disable recurrent state across tokens.")
+    p.add_argument(
+        "--no-state", action="store_true", help="Disable recurrent state across tokens."
+    )
     p.add_argument(
         "--detach-state",
         action=argparse.BooleanOptionalAction,
@@ -239,6 +261,12 @@ def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     p.add_argument("--sample-len", type=int, default=Cfg.sample_len)
     p.add_argument("--temperature", type=float, default=Cfg.temperature)
     p.add_argument("--start-text", default=Cfg.start_text)
+    p.add_argument(
+        "--restep-generate",
+        action=argparse.BooleanOptionalAction,
+        default=Cfg.restep_generate,
+        help="Re-step the last prompt token before sampling (legacy-compatible).",
+    )
 
     p.add_argument(
         "--sweep-k",
@@ -247,8 +275,14 @@ def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=[],
         help="Run multiple trainings, one per K (e.g. --sweep-k 1 2 4 8).",
     )
-    p.add_argument("--out-dir", default="", help="Optional directory to write logs/samples (e.g. runs).")
-    p.add_argument("--run-name", default="", help="Optional run name prefix (used with --out-dir).")
+    p.add_argument(
+        "--out-dir",
+        default="",
+        help="Optional directory to write logs/samples (e.g. runs).",
+    )
+    p.add_argument(
+        "--run-name", default="", help="Optional run name prefix (used with --out-dir)."
+    )
 
     return p.parse_args(argv)
 
@@ -285,6 +319,7 @@ def main() -> None:
         sample_len=args.sample_len,
         temperature=args.temperature,
         start_text=args.start_text,
+        restep_generate=args.restep_generate,
     )
 
     out_dir = Path(args.out_dir) if args.out_dir else None
