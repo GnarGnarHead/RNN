@@ -25,15 +25,20 @@ Important implementation details:
 - Training uses **answer-only loss masking**: we only backprop on tokens after `S:`. This avoids an impossible objective when prompts vary.
 - Lessons **do not end with `\n`** (so we don’t accidentally teach newline during the “letters” phase).
 - Retention checks reset recurrent state each quiz (`{"cmd":"reset"}`), so we measure **weights**, not working memory.
+- Legacy-compatible exams use `restep_generate=true`, which steps the final `:` once more before decoding. Last-mile repairs should use restep-aligned training examples (`S::answer`), now exposed by `scripts/tutor_guarded_runner.py --align-restep-training`.
 
 ## Known dynamics so far
 
 - **Catastrophic forgetting / single-attractor**: if we train only the newest letter (e.g. only `D`), the model often starts answering `D` for everything.
-- **Fix**: always interleave rehearsal (e.g. train on `A,B,C,D`, not just `D`), and *weight rehearsal* by repeating old targets in the `examples` list.
+- **Fix direction**: rehearsal is necessary, but plain interleaving is too crude. New targets need **maintenance bundles**: direct lessons, old mimicry, nearby copy/digram contrasts, prediction contrasts, and known confusions.
 - **Learning rate**: aggressive `lr` learns fast but overwrites. As the target set grows, a lower `lr` with more steps is safer.
   - Early (A–C): `lr ≈ 3e-3` worked
   - Adding D/E: `lr ≈ 1e-3` was more stable for retention
 - **BPTT vs detach**: for prompt-conditioned copy tasks, we typically want `detach_state=false` during `learn` (BPTT through the short example). Detaching can make it fail to bind the prompt to the answer.
+- **Tutor role correction (2026-04-26)**: mimicry is not just the first phase. It is the permanent stabilizer. The tutor should detect forgetting, repair it dynamically, and only promote checkpoints after non-regressing retention exams.
+- **Promotion rule**: partial improvement is diagnostic only. A final A-H checkpoint for `copy,copy2,next,next2` must pass `32/32` after reset; anything short of that remains a failed/diagnostic artifact.
+- **A-H last-mile dynamic**: direct repair of `next2:EF -> G` can shift the single failure to `next2:FG -> H`. The successful run alternated through that interference instead of treating `31/32` as acceptable.
+- **Margin baseline**: the clean A-H v3 checkpoint passes `32/32`, but the thinnest margins are successor wraparound items (`H -> A`, `GH -> A`, `FG -> H`). Future expansion should watch margins before pass/fail breaks.
 
 ## Milestones (retention)
 
@@ -109,7 +114,7 @@ The stepper supports mixing via:
 python3 scripts/tutor_stepper.py --text-path input.txt --targets ABCDE --checkpoint checkpoints/kinder_ABCDE.pt --tasks copy,next --task-order cycle
 ```
 
-### A–G letters + digrams + prediction (current best)
+### A–G letters + digrams + prediction
 
 Checkpoint (local): `checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt`
 
@@ -127,6 +132,49 @@ Quick verify:
 ```
 
 Then run `exam`.
+
+### A–H letters + digrams + prediction (current best)
+
+Checkpoint (local): `checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt`
+
+Demonstrated (retention, reset before each quiz):
+
+- copy: `A->A ... H->H`
+- digram copy (copy2): `AB->AB ... HA->HA`
+- next: `N:ABCDEFGH:A:n->B ... N:ABCDEFGH:H:n->A`
+- next2: `N:ABCDEFGH:AB:n->C ... N:ABCDEFGH:HA:n->B`
+
+Final verification:
+
+```bash
+.venv/bin/python scripts/exam_checkpoint.py --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --targets ABCDEFGH --tasks copy,copy2,next,next2
+```
+
+Expected result: `32/32 passed`.
+
+Margin baseline:
+
+```bash
+.venv/bin/python scripts/exam_checkpoint.py --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --targets ABCDEFGH --tasks copy,copy2,next,next2 \
+  --jsonl --trace-top-k 5 > runs/ah_v3_margin_baseline/exam.jsonl
+```
+
+Result: `32/32`, minimum margin `0.176428`, average margin `4.044073`.
+Weakest item: `next:N:ABCDEFGH:H:n -> A`.
+
+Important route:
+
+- Base clean A-G: `checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt`.
+- Best diagnostic A-H near miss: `runs/guarded_h_full_from_v5_strict_run2/best_rejected.pt`, `31/32`, failing `next2:EF -> G` by copying `F`.
+- Restep-aligned exact replay (`--align-restep-training --failure-repeats 512`) fixed `EF -> G` but moved the failure to `next2:FG -> H`.
+- A second strict repair from that shifted failure found a clean candidate:
+  - run: `runs/guarded_h_from_fg_regression_strict_run1`
+  - accepted candidate: `steps=20`, `lr=2e-05`, `focus=1`
+  - result: `32/32`, no regressions
 
 ### ABCDEFGH trial attempt (note: did not teach `H` yet)
 
@@ -160,7 +208,8 @@ Fix for next attempt:
 
 ## Next research step (proposed)
 
-Move from single letters to **digrams** while keeping retention:
+Use `checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt` as the clean base before broadening. The next expansion should keep the same maintenance-first rule:
 
-- Example: `T:AB S:AB` and quiz `T:AB S:` → generate 2 chars.
-- Start tiny (e.g. `AB`, `BA`, `AC`, `CA`) and aggressively interleave rehearsal of single-letter tasks.
+- add `I` only behind strict phase gates, then final `36/36` for `A-I` across `copy,copy2,next,next2`
+- or start word-like mini-patterns while retaining the full A-H exam as a regression gate
+- keep `--align-restep-training` enabled while exams use the legacy restep decoder

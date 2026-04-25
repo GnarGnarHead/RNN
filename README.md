@@ -1,72 +1,93 @@
-# RNN
+# Settle RNN Tutor Lab
 
-This project tests whether a tiny, attention-free recurrent character model can learn through a dynamic external tutor rather than bulk training alone.
+This is a tiny character-level recurrent model with an inner settling loop and
+no attention. An external tutor teaches it small skills, checks whether they
+survive after state resets, and repairs forgetting when it appears. The point is
+not language-model performance; it is to watch retention, forgetting, and repair
+in a system small enough to inspect.
 
-The model is deliberately small and CPU-friendly. The interesting part is the loop around it: a human/Codex tutor quizzes the model, grades the response with partial credit, applies small approved updates, and keeps checking whether old skills survive after state resets.
+## What Is Being Tested
 
-## Core Idea
+The model is a character-level next-token predictor. The research loop around it
+is the important part:
 
-The model is a character-level language model with no attention. For each input character it:
+- teach a small skill, such as `T:A S:A`
+- quiz with the answer omitted, such as `T:A S:`
+- reset recurrent state before retention exams
+- apply small supervised updates only when needed
+- re-test old skills after every update
+- promote checkpoints only when the full reset-based exam is clean
 
-1. Embeds the current character.
-2. Injects the previous recurrent state through a learned gate.
-3. Runs a shared residual MLP core for `K` internal settle iterations.
-4. Logs per-iteration movement as `delta[k]`.
-5. Decodes the next character from the settled state.
+This makes retention, forgetting, repair, and curriculum growth visible instead
+of hiding them inside one bulk training run.
 
-The research question is not raw language-modeling performance. It is whether structured tutoring plus recurrent settling can produce inspectable learning dynamics: retention, forgetting, repair, and curriculum growth.
+## Model Shape
 
-## Dynamic Tutor Loop
+For each input character, the model:
 
-The tutor is meant to stay dynamic. It is not a fixed benchmark, reward script, or static curriculum.
+1. embeds the current token
+2. mixes in persistent recurrent state through a learned gate
+3. runs a shared residual MLP core for `K` settle iterations
+4. records movement per settle step as `delta[k]`
+5. decodes the next character from the settled state
 
-The current workflow starts like a kindergarten lesson:
+There is no attention mechanism. Keeping the architecture small is deliberate:
+the goal is to see whether tutoring dynamics can be made clear enough to study.
 
-- teach copy tasks: `T:A S:A`
-- quiz with the answer omitted: `T:A S:`
-- reset state before retention checks, so success lives in weights rather than working memory
-- expand slowly: letters -> next-letter prediction -> digrams -> words/sentences
-- interleave rehearsal so new lessons do not overwrite old ones
+## Tutor Loop
 
-The tutor can respond to symptoms:
+The tutor is external to the model. In this repo that can mean the interactive
+stepper, the guarded runner, Codex CLI, and the human operator.
 
-- copy breaks -> regress to copy drills
-- next-letter prediction collapses -> separate prompts and rehearse old targets
-- output repeats across different prompts -> treat it as attractor collapse
-- settle deltas expand -> reduce scope or increase settling/check dynamics
+The current curriculum starts like a kindergarten lesson:
 
-See [TUTOR.md](TUTOR.md) for the live teaching method and [PROGRESS.md](PROGRESS.md) for the checkpoints and observed failure modes.
+- mimicry: `A -> A`, `B -> B`, ...
+- digram copy: `AB -> AB`, `BC -> BC`, ...
+- next-letter prediction: `A -> B`, `B -> C`, ...
+- two-letter successor prompts: `AB -> C`, `BC -> D`, ...
 
-## Current Best Milestone
+Mimicry is not treated as a phase to leave behind. It is a stabilizer that must
+remain under rehearsal while new skills are added.
 
-The current best local milestone is:
+The guarded runner records whether candidate updates fixed failures, created new
+failures, or shifted a failure to a neighboring prompt. That is the core
+scientific loop: train, examine, detect forgetting, repair, and only then
+promote.
+
+## Current Status
+
+The best local milestone is:
 
 ```text
-checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt
+checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt
 ```
 
-It demonstrates retention, with state reset before each quiz, for:
+It passes a reset-based A-H exam across four task families:
 
-- `copy`: `A -> A ... G -> G`
-- `copy2`: `AB -> AB ... GA -> GA`
-- `next`: `N:ABCDEFG:A:n -> B ... N:ABCDEFG:G:n -> A`
-- `next2`: `N:ABCDEFG:AB:n -> C ... N:ABCDEFG:GA:n -> B`
+- `copy`: `A -> A ... H -> H`
+- `copy2`: `AB -> AB ... HA -> HA`
+- `next`: `N:ABCDEFGH:A:n -> B ... N:ABCDEFGH:H:n -> A`
+- `next2`: `N:ABCDEFGH:AB:n -> C ... N:ABCDEFGH:HA:n -> B`
 
-Run the noninteractive exam:
+Result:
 
-```bash
-python3 scripts/exam_checkpoint.py \
-  --text-path input.txt \
-  --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt \
-  --targets ABCDEFG \
-  --tasks copy,copy2,next,next2
+```text
+32/32 passed
 ```
 
-The checkpoints themselves are local artifacts and ignored by git. See [docs/checkpoints.md](docs/checkpoints.md) for the checkpoint manifest.
+The checkpoint itself is a local artifact and is ignored by git. The repo keeps
+the code, protocols, and experiment records; generated data, runs, and `.pt`
+files stay local. See [docs/checkpoints.md](docs/checkpoints.md) and
+[PROGRESS.md](PROGRESS.md) for the local checkpoint manifest and history.
+
+The current A-H margin baseline is recorded in
+[docs/experiments/2026-04-26_ah_v3_margin_baseline.md](docs/experiments/2026-04-26_ah_v3_margin_baseline.md).
+The weakest items are successor wraparound cases, especially `H -> A`, which is
+useful context before attempting A-I.
 
 ## Quickstart
 
-Create a virtual environment and install the single runtime dependency:
+Create a virtual environment and install the minimal runtime dependency:
 
 ```bash
 python3 -m venv .venv
@@ -74,19 +95,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Provide a local training corpus:
+Provide a local character corpus:
 
 ```bash
 python3 scripts/download_tiny_shakespeare.py --out input.txt
 ```
 
-Train a baseline character model:
+Run the basic settle-loop character model:
 
 ```bash
 python3 settle_rnn_charlm.py --text-path input.txt --k-settle 2
 ```
 
-Run a K sweep and write logs/samples under `runs/`:
+Run a small `K` sweep:
 
 ```bash
 python3 settle_rnn_charlm.py \
@@ -97,64 +118,109 @@ python3 settle_rnn_charlm.py \
   --run-name sweep
 ```
 
-Start the dynamic tutor stepper:
+Start the interactive tutor:
 
 ```bash
 python3 scripts/tutor_stepper.py --text-path input.txt --targets A
 ```
 
-Run the stepper against a checkpoint:
+Inside the tutor REPL, useful commands include:
+
+- `exam`: reset-based retention check
+- `drill 200`: interleaved practice block
+- `tasks copy,copy2,next,next2`: choose task families
+- `focus EFG`: focus quizzes while retaining maintenance rehearsal
+- `save checkpoints/name.pt`: save a local milestone
+
+For the full operator protocol, see [TUTOR.md](TUTOR.md).
+
+## Exam And Promotion
+
+If you have a local checkpoint, run a noninteractive retention exam:
 
 ```bash
-python3 scripts/tutor_stepper.py \
+python3 scripts/exam_checkpoint.py \
   --text-path input.txt \
-  --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt \
-  --targets ABCDEFG \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --targets ABCDEFGH \
   --tasks copy,copy2,next,next2
 ```
 
-Inside the REPL, use `exam` for a retention check, `drill <n>` for interleaved rehearsal, and `save checkpoints/name.pt` after a milestone.
+For diagnostic JSONL with logit margins and top-k alternatives:
 
-By default, generation uses the original checkpoint-compatible behavior: it re-steps the last ingested token before sampling. Use `--no-restep-generate` when you want the cleaner mode that samples the first generated token from the cached logits produced during ingest.
+```bash
+python3 scripts/exam_checkpoint.py \
+  --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --targets ABCDEFGH \
+  --tasks copy,copy2,next,next2 \
+  --jsonl --trace-top-k 5
+```
+
+Use the guarded runner when trying to promote a new milestone:
+
+```bash
+python3 scripts/tutor_guarded_runner.py \
+  --text-path input.txt \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --out-dir runs/guarded_i_attempt \
+  --targets ABCDEFGHI \
+  --tasks copy,copy2,next,next2 \
+  --align-restep-training
+```
+
+Promotion is strict: partial improvement is diagnostic only. A checkpoint should
+not become the new milestone unless it passes the requested full exam after
+state resets, without regressing previously passed items.
+
+## Metrics To Watch
+
+During training and tutoring, track:
+
+- training loss
+- `delta[k]` across settle iterations
+- `logits_entropy`
+- `state_norm`
+- reset-based retention pass/fail
+- per-item logit margin
+- repeated outputs across different prompts
+- failure transitions: resolved, persistent, and newly introduced failures
+
+See [docs/metrics.md](docs/metrics.md) for the current metric plan.
 
 ## Repo Map
 
 - [settle_rnn_charlm.py](settle_rnn_charlm.py): CPU training script for the base char LM, K sweeps, logging, and samples.
-- [session.py](session.py): JSONL process that keeps recurrent state alive and exposes `reset`, `ingest`, `generate`, `learn`, `save`, and `load`.
-- [scripts/tutor_stepper.py](scripts/tutor_stepper.py): interactive dynamic tutor REPL.
-- [scripts/exam_checkpoint.py](scripts/exam_checkpoint.py): noninteractive retention exam for checkpoints.
+- [session.py](session.py): JSONL process exposing `reset`, `ingest`, `generate`, `learn`, `save`, and `load`.
+- [scripts/tutor_stepper.py](scripts/tutor_stepper.py): interactive human-in-the-loop tutor REPL.
+- [scripts/tutor_guarded_runner.py](scripts/tutor_guarded_runner.py): promotion-gated runner with forgetting detection and focused repairs.
+- [scripts/exam_checkpoint.py](scripts/exam_checkpoint.py): noninteractive retention exams with optional logit traces.
 - [rnn/model.py](rnn/model.py): attention-free recurrent settle-loop model.
 - [rnn/session.py](rnn/session.py): session wrapper and supervised learning helper.
-- [rnn/tutor.py](rnn/tutor.py): reusable lesson construction, scheduling, and grading helpers.
-- [tests/](tests): focused tests for tutor task construction and scheduler coverage.
+- [rnn/tutor.py](rnn/tutor.py): lesson construction, scheduling, grading, and maintenance examples.
+- [tests/](tests): focused unit tests for model generation, sessions, and tutor logic.
 - [TUTOR.md](TUTOR.md): teaching protocol and operator notes.
 - [PROGRESS.md](PROGRESS.md): research log and checkpoint history.
-- [docs/checkpoints.md](docs/checkpoints.md): local checkpoint manifest and verification commands.
-- [docs/briefs/](docs/briefs): older research briefs and design notes.
+- [docs/protocols/](docs/protocols): exam and promotion protocols.
+- [docs/experiments/](docs/experiments): structured experiment records.
+- [docs/failure_modes.md](docs/failure_modes.md): observed failures and mitigations.
+- [docs/checkpoint_lineage.md](docs/checkpoint_lineage.md): local checkpoint ancestry.
 
-## What To Watch
+## Development
 
-During training or tutoring, track:
+Run tests:
 
-- `loss`
-- `delta[k]` across settle iterations
-- `logits_entropy`
-- `state_norm`
-- retention after `reset`
-- repeated outputs across different prompts
+```bash
+python3 -m unittest discover -s tests
+```
 
-Useful experiments:
+Local-only files:
 
-- Compare `--sweep-k 1 2 4 8`.
-- Compare `--detach-state` and `--no-detach-state`.
-- Compare `--state-norm` and `--no-state-norm`.
-- Disable recurrence with `--no-state`.
-- Expand tutor targets gradually and keep rehearsal on.
-- Compare legacy generation with `--restep-generate` vs `--no-restep-generate` before training new milestones.
+- `input.txt`
+- `data/`
+- `runs/`
+- `checkpoints/*.pt`
 
-## Notes
-
-- Default device is CPU.
-- Keep `input.txt`, `data/`, `runs/`, and checkpoints local-only.
-- If you add dependencies, update [requirements.txt](requirements.txt).
-- If a new training phase works, record the command and result in [PROGRESS.md](PROGRESS.md).
+If a new training phase works, record the command, result, failures, and
+interpretation in [PROGRESS.md](PROGRESS.md) or a new file under
+[docs/experiments/](docs/experiments).

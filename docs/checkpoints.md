@@ -4,7 +4,7 @@ Checkpoints are local training artifacts and are ignored by git. This file recor
 
 ## Current Best
 
-### `checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt`
+### `checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt`
 
 Status: current best retained kindergarten milestone.
 
@@ -17,26 +17,32 @@ Model shape:
 
 Demonstrated with state reset before each quiz:
 
-- `copy`: `A -> A ... G -> G`
-- `copy2`: `AB -> AB ... GA -> GA`
-- `next`: `N:ABCDEFG:A:n -> B ... N:ABCDEFG:G:n -> A`
-- `next2`: `N:ABCDEFG:AB:n -> C ... N:ABCDEFG:GA:n -> B`
+- `copy`: `A -> A ... H -> H`
+- `copy2`: `AB -> AB ... HA -> HA`
+- `next`: `N:ABCDEFGH:A:n -> B ... N:ABCDEFGH:H:n -> A`
+- `next2`: `N:ABCDEFGH:AB:n -> C ... N:ABCDEFGH:HA:n -> B`
 
 Verify:
 
 ```bash
 python3 scripts/exam_checkpoint.py \
   --text-path input.txt \
-  --checkpoint checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt \
-  --targets ABCDEFG \
+  --checkpoint checkpoints/kinder_ABCDEFGH_alltasks_ctxn_v3.pt \
+  --targets ABCDEFGH \
   --tasks copy,copy2,next,next2
 ```
 
-Expected result: `28/28 passed`.
+Expected result: `32/32 passed`.
 
 Note: this checkpoint was trained and verified with legacy generation re-step behavior, which is the default. Keep `--restep-generate` enabled when comparing against this milestone.
 
 ## Useful Historical Milestones
+
+### `checkpoints/kinder_ABCDEFG_alltasks_ctxn_v2.pt`
+
+Status: retained A-G milestone; clean base used for the successful A-H expansion.
+
+Expected exam result: `28/28 passed` for `--targets ABCDEFG --tasks copy,copy2,next,next2`.
 
 ### `checkpoints/kinder_ABCDE.pt`
 
@@ -87,3 +93,6 @@ For each new milestone, record:
 - exact exam command
 - pass/fail summary
 - what regressed, if anything
+
+Also update [checkpoint_lineage.md](checkpoint_lineage.md) and add a structured
+experiment record under [experiments/](experiments/).

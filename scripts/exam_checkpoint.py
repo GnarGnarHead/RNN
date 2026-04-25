@@ -49,6 +49,12 @@ def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--jsonl", action="store_true", help="Print one JSON object per exam item."
     )
+    p.add_argument(
+        "--trace-top-k",
+        type=int,
+        default=5,
+        help="Number of top logits to include in each item trace.",
+    )
 
     # Fallbacks for raw state_dict checkpoints that do not carry model_cfg.
     p.add_argument("--d-model", type=int, default=32)
@@ -79,10 +85,58 @@ def _emit(result: Dict[str, Any], *, jsonl: bool) -> None:
         return
 
     status = "PASS" if result["passed"] else "FAIL"
+    margin = result.get("min_margin")
+    margin_s = "" if margin is None else f", margin={float(margin):.3f}"
     print(
         f"{status} {result['task']}:{result['prompt']!r} -> {result['got']!r} "
-        f"(expected {result['expected']!r}, score={result['score']:.2f})"
+        f"(expected {result['expected']!r}, score={result['score']:.2f}{margin_s})"
     )
+
+
+def _min_margin(trace: list[Dict[str, Any]]) -> float | None:
+    margins = [x.get("margin") for x in trace if x.get("margin") is not None]
+    if not margins:
+        return None
+    return float(min(margins))
+
+
+def _summary(results: list[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(results)
+    failures = sum(1 for r in results if not r["passed"])
+    margins = [
+        float(x)
+        for r in results
+        if (x := r.get("min_margin")) is not None
+    ]
+    weakest = sorted(
+        [
+            {
+                "task": r["task"],
+                "prompt": r["prompt"],
+                "expected": r["expected"],
+                "got": r["got"],
+                "passed": r["passed"],
+                "min_margin": r.get("min_margin"),
+            }
+            for r in results
+            if r.get("min_margin") is not None
+        ],
+        key=lambda x: float(x["min_margin"]),
+    )[:5]
+    return {
+        "passed": failures == 0,
+        "total": total,
+        "failures": failures,
+        "min_margin": round(min(margins), 6) if margins else None,
+        "avg_margin": round(sum(margins) / len(margins), 6) if margins else None,
+        "weakest_items": weakest,
+    }
+
+
+def _fmt_margin(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.3f}"
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -110,8 +164,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if any(t in {"copy2", "next", "next2"} for t in tasks) and len(targets) < 2:
         raise SystemExit("copy2/next/next2 require at least two targets")
 
-    failures = 0
-    total = 0
+    results: list[Dict[str, Any]] = []
     for ch in targets:
         for task in tasks:
             lesson = build_lesson(task, ch, targets)
@@ -121,8 +174,10 @@ def main(argv: Iterable[str] | None = None) -> int:
 
             sess.reset()
             sess.ingest(f"T:{lesson.prompt} S:", k_settle=args.k_settle)
-            got = sess.generate(
+            got, trace = sess.generate_with_trace(
                 gen_len,
+                expected=lesson.expected,
+                top_k=int(args.trace_top_k),
                 temperature=float(args.temperature),
                 k_settle=args.k_settle,
                 restep_last_token=bool(args.restep_generate),
@@ -150,27 +205,25 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "score": score,
                 "message": message,
                 "stats": stats,
+                "trace": trace,
+                "min_margin": _min_margin(trace),
             }
+            results.append(result)
             _emit(result, jsonl=bool(args.jsonl))
-            failures += 0 if passed else 1
-            total += 1
+
+    summary = _summary(results)
 
     if args.jsonl:
-        print(
-            json.dumps(
-                {
-                    "summary": {
-                        "passed": failures == 0,
-                        "total": total,
-                        "failures": failures,
-                    }
-                }
-            )
-        )
+        print(json.dumps({"summary": summary}))
     else:
-        print(f"\nExam summary: {total - failures}/{total} passed")
+        print(
+            f"\nExam summary: {summary['total'] - summary['failures']}/"
+            f"{summary['total']} passed "
+            f"(min_margin={_fmt_margin(summary['min_margin'])}, "
+            f"avg_margin={_fmt_margin(summary['avg_margin'])})"
+        )
 
-    return 1 if failures else 0
+    return 1 if summary["failures"] else 0
 
 
 if __name__ == "__main__":

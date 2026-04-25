@@ -38,6 +38,8 @@ Treat the model like a kindergartener, but don’t reward collapse:
 - **Be kind early:** partial credit for “close enough” answers so it stays engaged.
 - **Tighten over time:** as moving-average score rises, require more exactness.
 - **Stability is part of the grade:** prefer answers produced from a stable settle loop (lower/contracting `delta_per_k`) and avoid “always output the same thing” behavior.
+- **Maintenance comes first:** mimicry is not a bootstrap phase to leave behind. It is the stabilizer that keeps later prediction and sequence skills grounded.
+- **Teach contrasts, not only positives:** when a new target is added, rehearse nearby distinctions and known confusions before promotion.
 
 In practice, the tutor uses the model’s output + cheap stats (`delta_per_k`, `logits_entropy`, repetition) to decide when to:
 
@@ -45,6 +47,7 @@ In practice, the tutor uses the model’s output + cheap stats (`delta_per_k`, `
 - slow down / reduce scope
 - increase `k_settle`
 - apply more (or fewer) supervised correction steps
+- repair forgotten old items before accepting a new checkpoint
 
 ## Two kinds of “win”
 
@@ -74,6 +77,16 @@ When quizzing, you omit the answer and ask the model to generate it:
 ```
 T:A S:
 ```
+
+The legacy-compatible decoder re-steps the final `:` before sampling. When
+repairing a checkpoint under that exam mode, align training with that behavior:
+
+```
+T:A S::A
+```
+
+The guarded runner exposes this as `--align-restep-training`; keep it paired
+with `--restep-generate` while comparing against the current checkpoints.
 
 ## Mixing mimicry + prediction (recommended)
 
@@ -188,15 +201,41 @@ Also: for letter-copy / prompt-conditioned tasks, you usually want **BPTT throug
 For each new concept (letters first):
 
 1. **Retention quiz** (state reset each time): check old targets still work.
-2. **Teach in small bursts**: one `learn` call, 25–150 steps.
-3. **Re-quiz retention** immediately. If anything regresses, reduce `lr` and increase rehearsal weight.
-4. **Checkpoint** after each milestone (e.g. `checkpoints/kinder_ABCDE.pt`).
+2. **Build a maintenance bundle**: include the direct new lesson, old mimicry, nearby copy/digram contrasts, prediction contrasts, and known confusions.
+3. **Teach in small bursts**: one `learn` call, 25–150 steps.
+4. **Re-quiz retention** immediately. If anything regresses, repair the forgotten items and re-exam before promotion.
+5. **Checkpoint** only after a non-regressing retention pass (e.g. `checkpoints/kinder_ABCDE.pt`).
+
+For a final milestone, partial progress is not a promotion criterion. A-H with
+`copy,copy2,next,next2` is acceptable only at `32/32` after reset. Smaller phase
+gates are useful while teaching (`8/8` copy, `16/16` copy+copy2), but the final
+checkpoint must clear the full requested exam.
 
 Key tricks that prevent collapse/forgetting:
 
-- **Interleave rehearsal**: when adding `D`, train on `A,B,C,D` (not just `D`).
-- **Weight rehearsal**: duplicates in the `examples` list act like a simple sampler weight.
+- **Interleave maintenance**: when adding `D`, train on `A,B,C,D` plus the local contrasts that define `D`.
+- **Weight fragile skills**: duplicates in the `examples` list act like a simple sampler weight, but failed and recently repaired items should receive focused rehearsal.
 - **Lower `lr` as the set grows**: early letters tolerated `3e-3`; adding new letters often works better at `1e-3` with more steps.
+
+### Maintenance bundles
+
+A new target should be taught with a small neighborhood, not as an isolated prompt.
+For example, when adding `H`, maintain:
+
+- identity: `G->G`, `H->H`, and nearby old letters
+- digrams: `FG->FG`, `GH->GH`, `HA->HA`
+- predictions: `next:F->G`, `next:G->H`, `next:H->A`
+- two-step predictions: `next2:EF->G`, `next2:FG->H`, `next2:GH->A`, `next2:HA->B`
+- confusions: if `H` is answered as `F`, rehearse the local neighborhoods around both `H` and `F`
+
+This is why [scripts/tutor_guarded_runner.py](scripts/tutor_guarded_runner.py)
+uses maintenance bundles rather than only repeating the failed prompt.
+
+For sharp last-mile failures, add exact failed-prompt replay with
+`--failure-repeats <n>`. Keep the clean exam as the promotion gate. A useful
+pattern from the A-H run was: save the best non-promoted near miss, repair the
+single failure, detect the shifted regression, then repair that shifted failure
+under the same full `32/32` exam.
 
 ## Underlying JSONL session (advanced)
 

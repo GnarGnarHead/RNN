@@ -6,6 +6,8 @@ import unittest
 from rnn.tutor import (
     build_lesson,
     grade_task,
+    maintenance_examples,
+    maintenance_targets,
     normalize_tasks,
     select_target_task,
     task_examples,
@@ -35,6 +37,55 @@ class TutorTaskTests(unittest.TestCase):
         self.assertEqual(len(examples), 6)
         self.assertEqual(examples.count({"prompt": "A", "answer": "A"}), 2)
         self.assertEqual(examples.count({"prompt": "N:AB:A:n", "answer": "B"}), 1)
+
+    def test_maintenance_targets_include_expected_and_confused_neighborhoods(
+        self,
+    ) -> None:
+        targets = list("ABCDEFGH")
+        failures = [
+            {
+                "target": "G",
+                "task": "next",
+                "prompt": "N:ABCDEFGH:G:n",
+                "expected": "H",
+                "got": "A",
+            }
+        ]
+
+        maint = maintenance_targets(targets, failures=failures, radius=1)
+
+        self.assertIn("G", maint)
+        self.assertIn("H", maint)
+        self.assertIn("A", maint)
+        self.assertIn("B", maint)
+
+    def test_maintenance_examples_add_local_mimicry_and_task_contrasts(
+        self,
+    ) -> None:
+        targets = list("ABCDEFGH")
+        failures = [
+            {
+                "target": "H",
+                "task": "copy",
+                "prompt": "H",
+                "expected": "H",
+                "got": "F",
+            }
+        ]
+
+        examples = maintenance_examples(
+            targets,
+            ["next"],
+            failures=failures,
+            focus_weight=1,
+            radius=1,
+            include_mimicry=True,
+        )
+
+        self.assertIn({"prompt": "H", "answer": "H"}, examples)
+        self.assertIn({"prompt": "G", "answer": "G"}, examples)
+        self.assertIn({"prompt": "N:ABCDEFGH:G:n", "answer": "H"}, examples)
+        self.assertIn({"prompt": "N:ABCDEFGH:H:n", "answer": "A"}, examples)
 
     def test_sequential_cycle_scheduler_covers_cross_product(self) -> None:
         rng = random.Random(1337)

@@ -104,6 +104,119 @@ def task_examples(
     return examples
 
 
+def _lesson_key(lesson: Lesson) -> Tuple[str, str, str]:
+    return lesson.task, lesson.prompt, lesson.expected
+
+
+def _target_window(
+    target: str, alphabet: Sequence[str], *, radius: int
+) -> List[str]:
+    if target not in alphabet:
+        return []
+    chars = list(alphabet)
+    if not chars:
+        return []
+    i = chars.index(target)
+    out: List[str] = []
+    for offset in range(-int(radius), int(radius) + 1):
+        ch = chars[(i + offset) % len(chars)]
+        if ch not in out:
+            out.append(ch)
+    return out
+
+
+def maintenance_targets(
+    targets: Sequence[str],
+    *,
+    focus_targets: Sequence[str] = (),
+    failures: Sequence[Mapping[str, Any]] = (),
+    radius: int = 2,
+    include_confusions: bool = True,
+) -> List[str]:
+    """
+    Return a small target neighborhood for maintenance rehearsal.
+
+    A failed prompt usually implicates more than the failed target. For example,
+    `next:G -> A` when `H` is expected should rehearse the local neighborhood
+    around both `G` and `H`, and optionally around the confused output `A`.
+    """
+    alphabet = list(targets)
+    out: List[str] = []
+
+    def first_known(value: Any) -> str | None:
+        for ch in str(value or ""):
+            if ch in alphabet:
+                return ch
+        return None
+
+    def add_window(ch: str | None) -> None:
+        if not ch or ch not in alphabet:
+            return
+        for item in _target_window(ch, alphabet, radius=max(int(radius), 0)):
+            if item not in out:
+                out.append(item)
+
+    for ch in focus_targets:
+        add_window(ch)
+
+    for failure in failures:
+        add_window(first_known(failure.get("target", "")))
+        add_window(first_known(failure.get("expected", "")))
+        if include_confusions:
+            add_window(first_known(failure.get("got", "")))
+
+    return out
+
+
+def maintenance_examples(
+    targets: Sequence[str],
+    tasks: Sequence[str],
+    *,
+    weights: Mapping[str, int] | None = None,
+    focus_targets: Sequence[str] = (),
+    failures: Sequence[Mapping[str, Any]] = (),
+    focus_weight: int = 1,
+    radius: int = 2,
+    include_confusions: bool = True,
+    include_mimicry: bool = True,
+) -> List[Dict[str, str]]:
+    """
+    Build a maintenance-first rehearsal set.
+
+    This always starts with broad rehearsal over the requested target/task set,
+    then repeats a local support bundle around failed or focused targets. The
+    support bundle includes mimicry by default because copy tasks are the
+    stabilizer for later digram and prediction tasks.
+    """
+    examples = task_examples(targets, tasks, weights=weights)
+    support_targets = maintenance_targets(
+        targets,
+        focus_targets=focus_targets,
+        failures=failures,
+        radius=radius,
+        include_confusions=include_confusions,
+    )
+    if not support_targets or focus_weight <= 0:
+        return examples
+
+    support_tasks = normalize_tasks(tasks)
+    if include_mimicry and "copy" not in support_tasks:
+        support_tasks = ["copy"] + support_tasks
+
+    seen: set[Tuple[str, str, str]] = set()
+    support_examples: List[Dict[str, str]] = []
+    for ch in support_targets:
+        for task in support_tasks:
+            lesson = build_lesson(task, ch, targets)
+            key = _lesson_key(lesson)
+            if key in seen:
+                continue
+            seen.add(key)
+            support_examples.append(lesson.example())
+
+    return examples + support_examples * int(focus_weight)
+
+
 def select_target_task(
     targets: Sequence[str],
     tasks: Sequence[str],

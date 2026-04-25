@@ -134,6 +134,158 @@ class SettleSession:
         self._stats.total_generated += int(max_new_tokens)
         return self.vocab.decode(ids[0].tolist())
 
+    def _logit_trace_item(
+        self,
+        logits: torch.Tensor,
+        *,
+        position: int,
+        selected_id: int,
+        expected_id: int | None,
+        top_k: int,
+    ) -> Dict[str, Any]:
+        row = logits[0].detach()
+        k = max(1, min(int(top_k), int(row.numel())))
+        top_vals, top_ids = torch.topk(row, k=k)
+        top = [
+            {
+                "char": self.vocab.decode([int(idx)]),
+                "logit": float(val.detach().cpu().item()),
+            }
+            for val, idx in zip(top_vals, top_ids)
+        ]
+
+        selected_logit = float(row[int(selected_id)].detach().cpu().item())
+        expected_char = None
+        expected_logit = None
+        best_alt_char = None
+        best_alt_logit = None
+        margin = None
+        if expected_id is not None:
+            expected_char = self.vocab.decode([int(expected_id)])
+            expected_logit = float(row[int(expected_id)].detach().cpu().item())
+            alt = row.clone()
+            alt[int(expected_id)] = -torch.inf
+            alt_logit, alt_id = torch.max(alt, dim=0)
+            best_alt_char = self.vocab.decode([int(alt_id.detach().cpu().item())])
+            best_alt_logit = float(alt_logit.detach().cpu().item())
+            margin = expected_logit - best_alt_logit
+
+        return {
+            "position": int(position),
+            "expected": expected_char,
+            "expected_logit": expected_logit,
+            "predicted": top[0]["char"],
+            "predicted_logit": top[0]["logit"],
+            "selected": self.vocab.decode([int(selected_id)]),
+            "selected_logit": selected_logit,
+            "best_alternative": best_alt_char,
+            "best_alternative_logit": best_alt_logit,
+            "margin": margin,
+            "topk": top,
+        }
+
+    @torch.no_grad()
+    def generate_with_trace(
+        self,
+        max_new_tokens: int,
+        *,
+        expected: str | None = None,
+        top_k: int = 5,
+        temperature: float = 1.0,
+        k_settle: int | None = None,
+        restep_last_token: bool = True,
+    ) -> tuple[str, list[Dict[str, Any]]]:
+        """
+        Generate like generate(), while recording per-token logit diagnostics.
+
+        The trace is captured from the logits used for sampling each generated
+        token. This makes pass/fail exams inspectable without changing the
+        generation path.
+        """
+        self._require_ready()
+        expected_ids = (
+            []
+            if expected is None
+            else self.vocab.encode(expected, strict=True)
+        )
+
+        ids_out: list[int] = []
+        trace: list[Dict[str, Any]] = []
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            k = self.model._k_settle(k_settle)
+            token = self.model.last_token_id
+            logits = self.model.last_logits
+            if token is None:
+                raise RuntimeError(
+                    "No last_token_id. Call step() at least once before generate()."
+                )
+            if not restep_last_token and logits is None:
+                raise RuntimeError(
+                    "No cached logits. Call step() at least once before generate()."
+                )
+            if max_new_tokens <= 0:
+                raise ValueError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
+
+            delta_accum = torch.zeros((k,), device=token.device, dtype=torch.float32)
+            entropy_accum = torch.tensor(0.0, device=token.device)
+            last_stats: Dict[str, torch.Tensor] = {}
+
+            for i in range(int(max_new_tokens)):
+                if restep_last_token:
+                    logits, last_stats = self.model.step(token, k_settle=k)
+                    delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
+                    entropy_accum += last_stats["logits_entropy"].to(
+                        entropy_accum.dtype
+                    )
+                elif logits is None:
+                    raise RuntimeError("No cached logits available for generation.")
+
+                temp = float(temperature)
+                if temp <= 0.0:
+                    token = torch.argmax(logits, dim=-1)
+                else:
+                    next_logits = logits / temp
+                    probs = F.softmax(next_logits, dim=-1)
+                    token = torch.multinomial(probs, num_samples=1).squeeze(1)
+
+                selected_id = int(token[0].detach().cpu().item())
+                expected_id = expected_ids[i] if i < len(expected_ids) else None
+                trace.append(
+                    self._logit_trace_item(
+                        logits,
+                        position=i,
+                        selected_id=selected_id,
+                        expected_id=expected_id,
+                        top_k=top_k,
+                    )
+                )
+                ids_out.append(selected_id)
+
+                if not restep_last_token:
+                    logits, last_stats = self.model.step(token, k_settle=k)
+                    delta_accum += last_stats["delta_per_k"].to(delta_accum.dtype)
+                    entropy_accum += last_stats["logits_entropy"].to(
+                        entropy_accum.dtype
+                    )
+
+            self.model.last_token_id = token
+            self._stats.k_settle = k
+            self._stats.delta_per_k = (
+                delta_accum / int(max_new_tokens)
+            ).detach().cpu().tolist()
+            self._stats.logits_entropy = float(
+                (entropy_accum / int(max_new_tokens)).detach().cpu().item()
+            )
+            self._stats.state_norm = float(
+                last_stats["state_norm"].detach().cpu().item()
+            ) if last_stats else None
+            self._stats.total_generated += int(max_new_tokens)
+            return self.vocab.decode(ids_out), trace
+        finally:
+            self.model.train(was_training)
+
     def stats(self) -> Dict[str, Any]:
         out = self._stats.to_dict()
         out["ready"] = self.model.state is not None
